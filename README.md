@@ -254,6 +254,28 @@ It contains generators for:
 It is common and recommended to set up a module alias by using `G = PropCheck::Generators` in e.g. your testing-suite files to be able to refer to all of them.
 _(Earlier versions of the library recommended including the module instead. But this will make it very simple to accidentally shadow a generator with a local variable named `float` or `array` and similar.)_
 
+#### Generators.function
+
+`G.function(return_generator)` creates a callable generated function. Each distinct argument gets its own deterministic branch from `return_generator`:
+
+```ruby
+PropCheck.forall(f: G.function(G.integer), xs: G.array(G.integer, min: 1)) do |f:, xs:|
+  results = xs.map { |x| f.call(x) }
+  expect(xs.map { |x| f.call(x) }).to eq(results)
+end
+```
+
+If two arguments should share a branch, pass a key function as the first argument or as `key:`:
+
+```ruby
+even_or_odd = G.function(->(number) { number % 2 }, G.integer)
+```
+
+The default key supports values with stable identity (`nil`, booleans, numbers, strings, symbols,
+arrays, hashes, ranges, and regular expressions). Pass a custom key function for arbitrary objects,
+procs, or `Float::NAN`. Failures include the function's base seed and observed argument/output call
+table, and shrinking only simplifies observed outputs while keeping unobserved inputs deterministic.
+
 ### Writing Custom Generators
 
 As described in the previous section, PropCheck already comes bundled with a bunch of common generators.

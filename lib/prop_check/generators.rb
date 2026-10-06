@@ -3,6 +3,7 @@
 require 'date'
 require 'prop_check/generator'
 require 'prop_check/lazy_tree'
+require 'prop_check/generated_function'
 module PropCheck
   ##
   # Contains common generators.
@@ -483,6 +484,63 @@ module PropCheck
     def hash_of(key_generator, value_generator, **kwargs)
       array(tuple(key_generator, value_generator), **kwargs)
         .map(&:to_h)
+    end
+
+    ##
+    # Generates a callable deterministic function.
+    #
+    # `return_generator` generates the result for each distinct argument.
+    # A custom `key_function` maps arguments to a value with stable
+    # `#hash` and `#eql?` semantics. Arguments whose mapped keys are equal
+    # share one result branch.
+    #
+    # Repeated calls and call order never change a result. Results for keys
+    # that have not been observed yet remain deterministic while shrinking;
+    # only results for observed calls are simplified.
+    #
+    # Pass an explicit key function for arguments that cannot be stably encoded,
+    # such as arbitrary objects, procs, or Float::NAN.
+    #
+    #   >> Generators.function(Generators.integer).call(rng: Random.new(42), size: 10).respond_to?(:call)
+    #   => true
+    def function(first = nil, second = nil, key_function: nil, key: nil,
+                 return_generator: nil, value_generator: nil)
+      key_function ||= key
+      return_generator ||= value_generator
+
+      if second
+        key_function = first
+        return_generator = second
+      elsif first && return_generator
+        key_function ||= first
+      elsif first
+        return_generator = first
+      else
+        key_function ||= GeneratedFunction::DEFAULT_KEY_FUNCTION
+      end
+
+      if return_generator.nil?
+        raise ArgumentError, 'Generators.function requires a return value generator'
+      end
+      key_function ||= GeneratedFunction::DEFAULT_KEY_FUNCTION
+
+      unless return_generator.respond_to?(:generate)
+        raise ArgumentError, 'the second argument to Generators.function must be a generator'
+      end
+      unless key_function.respond_to?(:call)
+        raise ArgumentError, 'the key function passed to Generators.function must be callable'
+      end
+
+      Generator.new do |rng:, **kwargs|
+        base_seed = rng.rand(1 << 63)
+        generated_function = GeneratedFunction.new(
+          key_function,
+          return_generator,
+          kwargs,
+          base_seed
+        )
+        LazyTree.new(generated_function, generated_function.shrink_children)
+      end
     end
 
     @@alphanumeric_chars = [('a'..'z'), ('A'..'Z'), ('0'..'9')].flat_map(&:to_a).freeze
