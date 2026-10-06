@@ -248,6 +248,7 @@ It contains generators for:
 - (any, printable only, alphanumeric only, etc) strings and symbols
 - fixed-size arrays and hashes 
 - as well as varying-size arrays, hashes and sets.
+- generated functions.
 - dates, times, datetimes.
 - and many more!
 
@@ -300,6 +301,33 @@ you can use `Generators.frequency` which takes a hash of (integer_frequency => g
 
     >> G.frequency(5 => G.integer, 1 => G.printable_ascii_char).sample(size: 10, rng: Random.new(42))
     => [4, -3, 10, 8, 0, -7, 10, 1, "E", 10]
+
+#### Generators.function
+
+Use `function` when a property under test accepts another function. It generates a deterministic callable:
+
+    f = G.function(G.integer).call(size: 10, rng: Random.new(42))
+    f.call(1) == f.call(1)       # => true
+    f.call(1) == f.call(2)       # => false in general
+
+The result for each argument is generated on demand and memoized. Calling a generated function more than once,
+changing the order in which arguments are first called, or calling another generated function in between
+does not change any result.
+
+Arguments are identified through a key function. By default, keys are supported for `nil`, booleans, numbers,
+strings, symbols, arrays, hashes and ranges containing these types. For other arguments, pass a custom `key:`
+that returns a stable value:
+
+    G.function(G.integer, key: ->(record) { record.id })
+
+The key contract determines collisions: if two different arguments produce the same key, both arguments are
+aliases for exactly one generated branch and therefore return the same value. Keys must be stably serializable
+with `Marshal`; procs and other non-serializable keys are rejected. Avoid identity-derived keys unless identity
+within one process is intentionally the contract.
+
+If a test fails, PropCheck shrinks the return values for every argument/result pair that was observed.
+The failure output prints this call table so the failure can be reproduced. Inputs that were not called before
+the failure retain their original deterministic behavior when invoked on the shrunken function.
 
 #### Others
 
