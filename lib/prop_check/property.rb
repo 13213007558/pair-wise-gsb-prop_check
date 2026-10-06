@@ -246,15 +246,17 @@ module PropCheck
 
       n_runs = 0
       n_successful = 0
+      domain = enumerable_domain
 
       # Loop stops at first exception
-      attempts_enum(@gen).each do |generator_result|
+      attempts_enum(@gen, domain).each do |generator_result|
         n_runs += 1
         check_attempt(generator_result, n_successful, &block)
         n_successful += 1
       end
 
       ensure_not_exhausted!(n_runs)
+      report_exhaustive_domain(domain, n_successful)
     end
 
     private def gen_from_bindings(bindings, kwbindings)
@@ -323,32 +325,60 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
       raise e, output_string, e.backtrace
     end
 
-    private def attempts_enum(binding_generator)
+    private def enumerable_domain
+      generator_size = @config.resize_function.call(1).to_i
+      @gen.enumerable_domain(
+        size: generator_size,
+        rng: Random.new,
+        max_consecutive_attempts: @config.max_consecutive_attempts,
+        config: @config
+      )
+    end
+
+    private def attempts_enum(binding_generator, enumerable_domain)
       @hooks
-        .wrap_enum(raw_attempts_enum(binding_generator))
+        .wrap_enum(raw_attempts_enum(binding_generator, enumerable_domain))
         .lazy
         .take(@config.n_runs)
     end
 
-    private def raw_attempts_enum(binding_generator)
+    private def raw_attempts_enum(binding_generator, enumerable_domain)
       rng = Random.new
       size = 1
-      (0...@config.max_generate_attempts)
-        .lazy
-        .map do
-        generator_size = @config.resize_function.call(size).to_i
-        binding_generator.generate(
-          size: generator_size,
-          rng: rng,
-          max_consecutive_attempts: @config.max_consecutive_attempts,
-          config: @config
-        )
-      end
-        .map do |result|
-          size += 1
+      random_attempts = (0...@config.max_generate_attempts)
+                         .lazy
+                         .map do
+                           generator_size = @config.resize_function.call(size).to_i
+                           binding_generator.generate(
+                             size: generator_size,
+                             rng: rng,
+                             max_consecutive_attempts: @config.max_consecutive_attempts,
+                             config: @config
+                           )
+                         end
+                         .map do |result|
+                           size += 1
 
-          result
-        end
+                           result
+                         end
+
+      if enumerable_domain
+        PropCheck::Helper.lazy_append(enumerable_domain.lazy, random_attempts)
+      else
+        random_attempts
+      end
+    end
+
+    private def report_exhaustive_domain(domain, n_successful)
+      return unless domain && domain.exhaustive?
+
+      random_runs = n_successful - domain.enumerated_count
+      message = "Exhausted enumerable domain with #{domain.enumerated_count} input"
+      message += "s"
+      message += "; #{random_runs} additional random run" if random_runs.positive?
+      message += "s" if random_runs != 1
+      message += "."
+      STDOUT.puts message if @config.verbose
     end
 
     private def show_problem_output(problem, generator_results, n_successful, &block)

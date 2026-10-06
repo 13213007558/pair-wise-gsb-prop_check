@@ -60,10 +60,29 @@ module PropCheck
     #   >> r = Random.new(42); Generators.choose(0..5).sample(size: 20000, rng: r)
     #   => [3, 4, 2, 4, 4, 1, 2, 2, 2, 4]
     def choose(range)
-      Generator.new do |rng:, **|
-        val = rng.rand(range)
-        LazyTree.new(val, integer_shrink(val))
+      enumerable_domain = lambda do |**|
+        finite_range = choose_range(range)
+        next nil unless finite_range.is_a?(Range) && finite_range.begin.is_a?(Integer) &&
+                          finite_range.end.is_a?(Integer)
+
+        branches = finite_range.lazy.map do |value|
+          LazyTree.new(value, integer_shrink(value).select { |shrunk| finite_range.cover?(shrunk.root) })
+        end
+        Generator::EnumerableDomain.new(branches)
       end
+
+      Generator.new(enumerable_domain: enumerable_domain) do |rng:, **|
+        val = rng.rand(range)
+        finite_range = choose_range(range)
+        shrinks = integer_shrink(val)
+        shrinks = shrinks.select { |shrunk| finite_range.cover?(shrunk.root) } if finite_range
+        LazyTree.new(val, shrinks)
+      end
+    end
+
+    private def choose_range(choice)
+      return 0...choice if choice.is_a?(Integer)
+      choice if choice.is_a?(Range)
     end
 
     ##
@@ -316,7 +335,14 @@ module PropCheck
     #   >> Generators.tuple(Generators.integer, Generators.real_float).call(size: 10, rng: Random.new(42))
     #   => [-4, 13.0]
     def tuple(*generators)
-      Generator.new do |**kwargs|
+      enumerable_domain = lambda do |**kwargs|
+        domains = generators.map { |generator| generator.enumerable_domain(**kwargs) }
+        next nil if domains.any?(&:nil?)
+
+        tuple_enumerable_domain(domains)
+      end
+
+      Generator.new(enumerable_domain: enumerable_domain) do |**kwargs|
         LazyTree.zip(generators.map do |generator|
           generator.generate(**kwargs)
         end)
@@ -378,15 +404,46 @@ module PropCheck
       uniq = proc { |x| x } if uniq == true
 
       if max.nil?
-        nonnegative_integer.bind { |count| make_array(element_generator, min, count, uniq) }
-      else
-        choose(min..max).bind { |count| make_array(element_generator, min, count, uniq) }
+        return nonnegative_integer.bind { |count| make_array(element_generator, min, count, uniq) }
+      end
+
+      enumerable_domain = lambda do |**kwargs|
+        count_generator = choose(min..max)
+        count_domain = count_generator.enumerable_domain(**kwargs)
+        next nil unless count_domain
+
+        count_domain.bind_trees do |count_tree|
+          count = count_tree.root
+        array_generator = make_array(element_generator, min, count, uniq, max)
+          array_domain = array_generator.enumerable_domain(**kwargs)
+
+          unless array_domain
+            next Generator::EnumerableDomain.new(
+              [array_generator.generate(**kwargs), Generator::EnumerableDomain::UNKNOWN],
+              exhaustive: false
+            )
+          end
+
+          array_domain.bind_trees do |array_tree|
+            shorter_arrays = count_tree.children.map do |shorter_count|
+              shorter_count.bind do |new_count|
+                make_array(element_generator, min, new_count, uniq, max).generate(**kwargs)
+              end
+            end
+            LazyTree.new(array_tree.root, PropCheck::Helper.lazy_append(array_tree.children, shorter_arrays))
+          end
+        end
+      end
+
+      Generator.new(enumerable_domain: enumerable_domain) do |**kwargs|
+        count = choose(min..max).generate(**kwargs).root
+        make_array(element_generator, min, count, uniq, max).generate(**kwargs)
       end
     end
 
-    private def make_array(element_generator, min, count, uniq)
-      amount = min if min > (count - min)
-      amount ||= (count - min)
+    private def make_array(element_generator, min, count, uniq, max = nil)
+      amount = [count, min].max
+      amount = [amount, max].min if max
 
       # Simple, optimized implementation:
       return make_array_simple(element_generator, amount) unless uniq
@@ -404,7 +461,19 @@ module PropCheck
     end
 
     private def make_array_uniq(element_generator, min, amount, uniq_fun)
-      Generator.new do |**kwargs|
+      enumerable_domain = lambda do |**kwargs|
+        next Generator::EnumerableDomain.singleton(LazyTree.new([])) if amount.zero?
+
+        generators = amount.times.map { element_generator.clone }
+        domains = generators.map { |generator| generator.enumerable_domain(**kwargs) }
+        next nil if domains.any?(&:nil?)
+
+        tuple_enumerable_domain(domains).map_trees do |tree|
+          tree.map { |array| array.uniq(&uniq_fun) }
+        end
+      end
+
+      Generator.new(enumerable_domain: enumerable_domain) do |**kwargs|
         arr = []
         uniques = Set.new
         count = 0
@@ -436,6 +505,30 @@ module PropCheck
           LazyTree.zip(arr).map { |array| array.uniq(&uniq_fun) }
         end
       end
+    end
+
+    private def tuple_enumerable_domain(domains)
+      return PropCheck::Generator::EnumerableDomain.singleton(LazyTree.new([])) if domains.empty?
+
+      first_domain, *remaining_domains = domains
+      remaining_domain = tuple_enumerable_domain(remaining_domains)
+
+      first_domain.bind_trees do |first_tree|
+        remaining_domain.map_trees do |remaining_tree|
+          concat_tuple_trees(first_tree, remaining_tree)
+        end
+      end
+    end
+
+    private def concat_tuple_trees(first_tree, remaining_tree)
+      shorter_remaining = remaining_tree.children.map do |child|
+        concat_tuple_trees(first_tree, child)
+      end
+      different_first = first_tree.children.map do |child|
+        concat_tuple_trees(child, remaining_tree)
+      end
+      children = PropCheck::Helper.lazy_append(shorter_remaining, different_first)
+      LazyTree.new([first_tree.root, *remaining_tree.root], children)
     end
 
     ##

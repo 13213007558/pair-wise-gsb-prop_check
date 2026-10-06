@@ -1,3 +1,5 @@
+require_relative 'generator/enumerable_domain'
+
 module PropCheck
   ##
   # A `Generator` is a special kind of 'proc' that,
@@ -23,8 +25,9 @@ module PropCheck
 
     ##
     # Being a special kind of Proc, a Generator wraps a block.
-    def initialize(&block)
+    def initialize(enumerable_domain: nil, &block)
       @block = block
+      @enumerable_domain_block = enumerable_domain
     end
 
     ##
@@ -46,6 +49,16 @@ module PropCheck
 
       Probably too few generator results were adhering to a `where` condition.
       "''
+    end
+
+    ##
+    # Returns a lazy enumerable domain when this generator can enumerate some or
+    # all of its values. Returns `nil` when its domain is infinite or unknown.
+    def enumerable_domain(**kwargs)
+      return nil unless @enumerable_domain_block
+
+      kwargs = @@default_kwargs.merge(kwargs)
+      @enumerable_domain_block.call(**kwargs)
     end
 
     ##
@@ -76,7 +89,8 @@ module PropCheck
     #   >> Generators.integer.bind { |a| Generators.integer.bind { |b| Generator.wrap([a , b]) } }.call(size: 100, rng: Random.new(42))
     #   => [2, 79]
     def self.wrap(val)
-      Generator.new { LazyTree.wrap(val) }
+      tree = LazyTree.wrap(val)
+      Generator.new(enumerable_domain: ->(_) { Generator::EnumerableDomain.singleton(tree) }) { tree }
     end
 
     ##
@@ -95,7 +109,17 @@ module PropCheck
       #     inner_generator.generate(size, rng)
       #   end.flatten
       # end
-      Generator.new do |**kwargs|
+      enumerable_domain = lambda do |**kwargs|
+        outer_domain = self.enumerable_domain(**kwargs)
+        next nil unless outer_domain
+
+        outer_branches = outer_domain.branches.map do |outer_branch|
+          bind_enumerable_branch(outer_branch, generator_proc, kwargs)
+        end
+        Generator::EnumerableDomain.new(outer_branches, exhaustive: outer_domain.known_complete?)
+      end
+
+      Generator.new(enumerable_domain: enumerable_domain) do |**kwargs|
         outer_result = generate(**kwargs)
         outer_result.bind do |outer_val|
           inner_generator = generator_proc.call(outer_val)
@@ -110,7 +134,16 @@ module PropCheck
     #   >> Generators.choose(32..128).map(&:chr).call(size: 10, rng: Random.new(42))
     #   => "S"
     def map(&proc)
-      Generator.new do |**kwargs|
+      enumerable_domain = lambda do |**kwargs|
+        source_domain = self.enumerable_domain(**kwargs)
+        next nil unless source_domain
+
+        source_domain
+          .map_trees { |tree| tree.map(&proc) }
+          .reject_trees { |tree| tree.root == :"_PropCheck.filter_me" }
+      end
+
+      Generator.new(enumerable_domain: enumerable_domain) do |**kwargs|
         result = generate(**kwargs)
         result.map(&proc)
       end
@@ -127,7 +160,16 @@ module PropCheck
     #  >> generator.call(size: 10, rng: Random.new(42), config: example_config)
     #  => Date.new(2023, 01, 12)
     def with_config
-      Generator.new do |**kwargs|
+      enumerable_domain = lambda do |**kwargs|
+        source_domain = self.enumerable_domain(**kwargs)
+        next nil unless source_domain
+
+        source_domain.map_trees do |tree|
+          tree.map { |val| [val, kwargs[:config]] }
+        end
+      end
+
+      Generator.new(enumerable_domain: enumerable_domain) do |**kwargs|
         result = generate(**kwargs)
         result.map { |val| [val, kwargs[:config]] }
       end
@@ -154,10 +196,61 @@ module PropCheck
     #
     #    >> Generators.integer.resize{}
     def resize(&proc)
-      Generator.new do |size:, **other_kwargs|
+      enumerable_domain = lambda do |size:, **other_kwargs|
+        new_size = proc.call(size)
+        self.enumerable_domain(**other_kwargs, size: new_size)
+      end
+
+      Generator.new(enumerable_domain: enumerable_domain) do |size:, **other_kwargs|
         new_size = proc.call(size)
         generate(**other_kwargs, size: new_size)
       end
+    end
+
+    private
+
+    def bind_enumerable_branch(branch, generator_proc, kwargs)
+      case branch
+      when Generator::EnumerableDomain::UNKNOWN
+        Generator::EnumerableDomain::UNKNOWN
+      when LazyTree
+        bind_enumerable_tree(branch, generator_proc, kwargs)
+      when Generator::EnumerableDomain
+        nested_branches = branch.branches.map do |nested_branch|
+          bind_enumerable_branch(nested_branch, generator_proc, kwargs)
+        end
+        Generator::EnumerableDomain.new(nested_branches, exhaustive: branch.known_complete?)
+      when Enumerator
+        branch.map { |nested_branch| bind_enumerable_branch(nested_branch, generator_proc, kwargs) }
+      else
+        raise ArgumentError, "Unexpected enumerable domain branch: #{branch.inspect}"
+      end
+    end
+
+    def bind_enumerable_tree(outer_tree, generator_proc, kwargs)
+      inner_generator = generator_proc.call(outer_tree.root)
+      inner_domain = inner_generator.enumerable_domain(**kwargs)
+
+      unless inner_domain
+        return Generator::EnumerableDomain.new(
+          [inner_generator.generate(**kwargs), Generator::EnumerableDomain::UNKNOWN],
+          exhaustive: false
+        )
+      end
+
+      inner_domain.map_trees do |inner_tree|
+        bind_trees(outer_tree, inner_tree, generator_proc, kwargs)
+      end
+    end
+
+    def bind_trees(outer_tree, inner_tree, generator_proc, kwargs)
+      outer_children = outer_tree.children.map do |outer_child|
+        outer_child.bind do |outer_value|
+          generator_proc.call(outer_value).generate(**kwargs)
+        end
+      end
+      children = PropCheck::Helper.lazy_append(inner_tree.children, outer_children)
+      LazyTree.new(inner_tree.root, children)
     end
   end
 end
