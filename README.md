@@ -238,6 +238,42 @@ A short summary:
 - Arrays and hashes shrink to fewer elements, as well as shrinking their elements.
 - Strings shrink to shorter strings, as well as characters earlier in their alphabet.
 
+#### Parallel checking
+
+When checking a single sample is slow (and independent of the other samples),
+you can let PropCheck check multiple samples in parallel
+by setting the `n_workers` configuration option:
+
+```ruby
+PropCheck.forall(x: PropCheck::Generators.integer)
+         .with_config(n_workers: 4) do |x:|
+  # ...
+end
+```
+
+Samples are then generated and checked by a pool of worker threads.
+Workers may finish out of order, but the logical sequence of samples is
+exactly the same as when running sequentially: the counterexample that is
+reported is always the failing sample with the lowest index,
+and shrinking still happens in the main thread.
+The amount of work that is generated ahead of time is bounded
+(at most `2 * n_workers` samples are in flight at any moment),
+and once the outcome of the run is decided, no new samples are started.
+
+The before/after/around hooks are still called exactly once per sample
+(now potentially from multiple threads),
+so make sure that your hooks and your check block are thread-safe.
+
+To make the generated samples reproducible (in both sequential and parallel runs),
+set the `seed` configuration option:
+
+```ruby
+PropCheck.forall(x: PropCheck::Generators.integer)
+         .with_config(seed: 42, n_workers: 4) do |x:|
+  # ...
+end
+```
+
 ### Builtin Generators
 
 PropCheck comes with [many builtin generators in the PropCheck::Generators](https://www.rubydoc.info/github/Qqwy/ruby-prop_check/main/PropCheck/Generators) module.

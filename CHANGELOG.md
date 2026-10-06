@@ -1,3 +1,9 @@
+- Unreleased
+  - Features:
+    - New `n_workers` option in `PropCheck::Property::Configuration` to check samples in parallel using multiple worker threads. The logical sequence of samples is the same regardless of the number of workers, the failing sample with the lowest index is always reported as the counterexample, and shrinking still happens in the main thread.
+    - New `seed` option in `PropCheck::Property::Configuration` to make the generated samples reproducible.
+  - Changes:
+    - Each generated sample now uses its own random number generator, deterministically derived from the configured `seed` and the index of the sample, instead of one shared random number generator.
 - 1.0.2
   - Fixes:
     - When calling `Generator#sample` or `Generator#call`, the options are now merged with the default options _once_, resulting in a slight speedup. (c.f. [#24](https://github.com/Qqwy/ruby-prop_check/pull/24), thank you, @niku!)

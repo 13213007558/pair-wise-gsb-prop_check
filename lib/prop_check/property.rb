@@ -3,6 +3,7 @@ require 'stringio'
 require 'prop_check/property/configuration'
 require 'prop_check/property/output_formatter'
 require 'prop_check/property/shrinker'
+require 'prop_check/property/parallel_runner'
 require 'prop_check/hooks'
 module PropCheck
   ##
@@ -244,17 +245,54 @@ module PropCheck
     def check(&block)
       return self unless block_given?
 
+      if @config.n_workers > 1
+        check_in_parallel(&block)
+      else
+        check_sequentially(&block)
+      end
+    end
+
+    private def check_sequentially(&block)
       n_runs = 0
       n_successful = 0
+      base_seed = random_base_seed
 
       # Loop stops at first exception
-      attempts_enum(@gen).each do |generator_result|
+      attempts_enum(@gen, base_seed).each do |generator_result|
         n_runs += 1
         check_attempt(generator_result, n_successful, &block)
         n_successful += 1
       end
 
       ensure_not_exhausted!(n_runs)
+    end
+
+    # Checks the property using multiple worker threads.
+    #
+    # The workers speculatively generate and check samples in parallel,
+    # but the main coordination flow right here decides, in order,
+    # what the final outcome is (and performs shrinking, when needed).
+    private def check_in_parallel(&block)
+      base_seed = random_base_seed
+      generate = proc { |index| generate_attempt(@gen, index, base_seed) }
+      outcome = PropCheck::Property::ParallelRunner
+                .new(generate, @hooks, @config)
+                .run(&block)
+
+      case outcome.status
+      when :success
+        nil
+      when :exhausted
+        raise_generator_exhausted!
+      when :error
+        # Generation problems and interrupts are reraised as-is,
+        # exactly like they propagate in a sequential run.
+        raise outcome.exception
+      when :failure
+        # `outcome.index` earlier attempts all passed,
+        # so it is also the amount of successful runs.
+        raise_failure(outcome.exception, outcome.generator_result, outcome.index, &block)
+      end
     end
 
     private def gen_from_bindings(bindings, kwbindings)
@@ -305,14 +343,21 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
     # so we can shrink to find their cause.
     # don't worry: they all get reraised
     rescue Exception => e
-      output, shrunken_result, shrunken_exception, n_shrink_steps = show_problem_output(e, generator_result,
-                                                                                        n_successful, &block)
-      output_string = output.is_a?(StringIO) ? output.string : e.message
+      raise_failure(e, generator_result, n_successful, &block)
+    end
 
-      e.define_singleton_method :prop_check_info do
+    # Shrinks the failing sample (in the current, coordinating thread)
+    # and reraises the failure, enriched with `#prop_check_info`.
+    private def raise_failure(problem, generator_result, n_successful, &block)
+      output, shrunken_result, shrunken_exception, n_shrink_steps = show_problem_output(
+        problem, generator_result, n_successful, &block
+      )
+      output_string = output.is_a?(StringIO) ? output.string : problem.message
+
+      problem.define_singleton_method :prop_check_info do
         {
           original_input: generator_result.root,
-          original_exception_message: e.message,
+          original_exception_message: problem.message,
           shrunken_input: shrunken_result,
           shrunken_exception: shrunken_exception,
           n_successful: n_successful,
@@ -320,35 +365,43 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
         }
       end
 
-      raise e, output_string, e.backtrace
+      raise problem, output_string, problem.backtrace
     end
 
-    private def attempts_enum(binding_generator)
+    private def attempts_enum(binding_generator, base_seed)
       @hooks
-        .wrap_enum(raw_attempts_enum(binding_generator))
+        .wrap_enum(raw_attempts_enum(binding_generator, base_seed))
         .lazy
         .take(@config.n_runs)
     end
 
-    private def raw_attempts_enum(binding_generator)
-      rng = Random.new
-      size = 1
+    private def raw_attempts_enum(binding_generator, base_seed)
       (0...@config.max_generate_attempts)
         .lazy
-        .map do
-        generator_size = @config.resize_function.call(size).to_i
-        binding_generator.generate(
-          size: generator_size,
-          rng: rng,
-          max_consecutive_attempts: @config.max_consecutive_attempts,
-          config: @config
-        )
+        .map do |index|
+        generate_attempt(binding_generator, index, base_seed)
       end
-        .map do |result|
-          size += 1
+    end
 
-          result
-        end
+    # Generates the sample for the attempt with the given `index`.
+    #
+    # Every attempt uses its own random number generator, deterministically
+    # derived from `base_seed` and the attempt `index`. Thanks to this,
+    # the logical sequence of samples is exactly the same,
+    # no matter how many workers generate and check them.
+    private def generate_attempt(binding_generator, index, base_seed)
+      rng = Random.new(base_seed + index)
+      generator_size = @config.resize_function.call(index + 1).to_i
+      binding_generator.generate(
+        size: generator_size,
+        rng: rng,
+        max_consecutive_attempts: @config.max_consecutive_attempts,
+        config: @config
+      )
+    end
+
+    private def random_base_seed
+      @config.seed || Random.new_seed
     end
 
     private def show_problem_output(problem, generator_results, n_successful, &block)
