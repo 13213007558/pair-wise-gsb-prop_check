@@ -7,6 +7,9 @@ module PropCheck
     # c.f. PropCheck.configure, PropCheck.configuration and PropCheck::Property#with_config
     #
     # ## Available options
+    # - choice_tape: When true, records finite choices and prints replay tokens for failures. (Default: false)
+    # - replay_token: Replays the generator represented by a previously printed replay token.
+    # - max_replay_token_bytes: Maximum allowed encoded replay token size. (Default: 4096)
     # - `verbose:` When true, shows detailed options of the data generation and shrinking process. (Default: false)
     # - `n_runs:` The amount of iterations each `forall` is being run.
     # - `max_generate_attempts:` The amount of times the library tries a generator in total
@@ -22,6 +25,9 @@ module PropCheck
     #   (Default: `proc { |size| size }`)
     Configuration = Struct.new(
       :verbose,
+      :choice_tape,
+      :replay_token,
+      :max_replay_token_bytes,
       :n_runs,
       :max_generate_attempts,
       :max_shrink_steps,
@@ -32,6 +38,9 @@ module PropCheck
     ) do
       def initialize(
         verbose: false,
+        choice_tape: false,
+        replay_token: nil,
+        max_replay_token_bytes: 4096,
         n_runs: 100,
         max_generate_attempts: 10_000,
         max_shrink_steps: 10_000,

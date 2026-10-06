@@ -1,4 +1,6 @@
 require "prop_check/version"
+require 'prop_check/choice_tape'
+require 'prop_check/replay_token'
 require 'prop_check/property'
 require 'prop_check/generator'
 require 'prop_check/generators'
@@ -22,6 +24,10 @@ module PropCheck
     class UserError < Error; end
     class GeneratorExhaustedError < UserError; end
     class MaxShrinkStepsExceededError < UserError; end
+    class UnreplayableChoiceError < UserError; end
+    class ChoiceTapeMismatchError < UserError; end
+    class InvalidReplayTokenError < UserError; end
+    class ReplayTokenTooLargeError < UserError; end
   end
 
   extend self

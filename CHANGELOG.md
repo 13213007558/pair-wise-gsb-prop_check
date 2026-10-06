@@ -1,3 +1,8 @@
+- Unreleased
+  - Features:
+    - Choice tape mode records every finite generator choice together with its range. Failures print a versioned, size-limited replay token.
+    - Replay does not draw fresh random values. When generator ranges or structure diverge, the first differing choice is reported.
+    - Tape shrinking changes a prefix and reruns the generator so dependent choice ranges are regenerated instead of replaying an invalid suffix.
 - 1.0.2
   - Fixes:
     - When calling `Generator#sample` or `Generator#call`, the options are now merged with the default options _once_, resulting in a slight speedup. (c.f. [#24](https://github.com/Qqwy/ruby-prop_check/pull/24), thank you, @niku!)

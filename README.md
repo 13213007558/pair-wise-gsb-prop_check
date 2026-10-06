@@ -238,6 +238,34 @@ A short summary:
 - Arrays and hashes shrink to fewer elements, as well as shrinking their elements.
 - Strings shrink to shorter strings, as well as characters earlier in their alphabet.
 
+#### Replaying complex bind generators
+
+A seed alone does not show which finite choice led to a counterexample. Enable choice tape mode to record
+each finite integer range and the value selected from it:
+
+    PropCheck.forall(my_generator)
+      .with_config(choice_tape: true)
+      .check do |value|
+        # property...
+      end
+
+When a failure occurs, the report contains a Replay token and, after shrinking, a Shrunken replay token.
+Replay with:
+
+    PropCheck.forall(my_generator)
+      .with_config(replay_token: token)
+      .check do |value|
+        # same property...
+      end
+
+Replay follows the recorded choices and does not draw new random values. If the generator now requests a
+different range or ends at a different choice, PropCheck reports the first divergence. Shrinking only keeps a
+modified prefix and reruns the generator; later dependent ranges and values are regenerated, so an index always
+uses the range valid for the current value it depends on.
+
+The token format is versioned, restricted to JSON primitive data, and rejected if it exceeds
+max_replay_token_bytes (4096 bytes by default). It never serializes arbitrary Ruby objects or Procs.
+
 ### Builtin Generators
 
 PropCheck comes with [many builtin generators in the PropCheck::Generators](https://www.rubydoc.info/github/Qqwy/ruby-prop_check/main/PropCheck/Generators) module.

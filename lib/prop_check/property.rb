@@ -3,6 +3,7 @@ require 'stringio'
 require 'prop_check/property/configuration'
 require 'prop_check/property/output_formatter'
 require 'prop_check/property/shrinker'
+require 'prop_check/property/choice_tape_shrinker'
 require 'prop_check/hooks'
 module PropCheck
   ##
@@ -246,15 +247,16 @@ module PropCheck
 
       n_runs = 0
       n_successful = 0
+      replay_data = load_replay_data
 
       # Loop stops at first exception
-      attempts_enum(@gen).each do |generator_result|
+      attempts_enum(@gen, replay_data).each do |generator_result, choice_tape|
         n_runs += 1
-        check_attempt(generator_result, n_successful, &block)
+        check_attempt(generator_result, n_successful, choice_tape, &block)
         n_successful += 1
       end
 
-      ensure_not_exhausted!(n_runs)
+      ensure_not_exhausted!(n_runs) unless replay_data
     end
 
     private def gen_from_bindings(bindings, kwbindings)
@@ -293,7 +295,7 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
         "''
     end
 
-    private def check_attempt(generator_result, n_successful, &block)
+    private def check_attempt(generator_result, n_successful, choice_tape, &block)
       PropCheck::Helper.call_splatted(generator_result.root, &block)
 
     # immediately stop (without shrinnking) for when the app is asked
@@ -305,64 +307,130 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
     # so we can shrink to find their cause.
     # don't worry: they all get reraised
     rescue Exception => e
-      output, shrunken_result, shrunken_exception, n_shrink_steps = show_problem_output(e, generator_result,
-                                                                                        n_successful, &block)
+      output, shrunken_result, shrunken_exception, n_shrink_steps, replay_tokens =
+        show_problem_output(e, generator_result, n_successful, choice_tape, &block)
       output_string = output.is_a?(StringIO) ? output.string : e.message
 
       e.define_singleton_method :prop_check_info do
-        {
+        info = {
           original_input: generator_result.root,
           original_exception_message: e.message,
           shrunken_input: shrunken_result,
           shrunken_exception: shrunken_exception,
           n_successful: n_successful,
-          n_shrink_steps: n_shrink_steps
+          n_shrink_steps: n_shrink_steps,
         }
+        info[:replay_token] = replay_tokens.fetch(:original) if replay_tokens.fetch(:original)
+        if replay_tokens.fetch(:shrunken)
+          info[:shrunken_replay_token] = replay_tokens.fetch(:shrunken)
+        end
+        info
       end
 
       raise e, output_string, e.backtrace
     end
 
-    private def attempts_enum(binding_generator)
+    private def attempts_enum(binding_generator, replay_data)
       @hooks
-        .wrap_enum(raw_attempts_enum(binding_generator))
+        .wrap_enum(raw_attempts_enum(binding_generator, replay_data))
         .lazy
         .take(@config.n_runs)
     end
 
-    private def raw_attempts_enum(binding_generator)
-      rng = Random.new
-      size = 1
-      (0...@config.max_generate_attempts)
-        .lazy
-        .map do
-        generator_size = @config.resize_function.call(size).to_i
-        binding_generator.generate(
-          size: generator_size,
-          rng: rng,
-          max_consecutive_attempts: @config.max_consecutive_attempts,
-          config: @config
-        )
+    private def raw_attempts_enum(binding_generator, replay_data)
+      if replay_data
+        Enumerator.new do |yielder|
+          tape = PropCheck::ChoiceTape.new(
+            nil,
+            choices: replay_data.fetch(:choices),
+            mode: :replay,
+            size: replay_data.fetch(:size)
+          )
+          result = generate_attempt(binding_generator, tape, tape.size, choice_tape: tape)
+          yielder.yield([result, tape])
+        end.lazy
+      else
+        Enumerator.new do |yielder|
+          size = 1
+          loop do
+            generator_size = @config.resize_function.call(size).to_i
+            tape = record_choice_tape(generator_size)
+            result = generate_attempt(binding_generator, tape || Random.new, generator_size, choice_tape: tape)
+            yielder.yield([result, tape])
+            size += 1
+          end
+        end.lazy
       end
-        .map do |result|
-          size += 1
-
-          result
-        end
     end
 
-    private def show_problem_output(problem, generator_results, n_successful, &block)
+    private def generate_attempt(binding_generator, rng, size, choice_tape: nil)
+      binding_generator.generate(
+        size: size,
+        rng: rng,
+        choice_tape: choice_tape,
+        max_consecutive_attempts: @config.max_consecutive_attempts,
+        config: @config
+      )
+    end
+
+    private def record_choice_tape(size)
+      return unless choice_tape_enabled?
+
+      PropCheck::ChoiceTape.new(Random.new, mode: :record, size: size)
+    end
+
+    private def load_replay_data
+      return unless @config.replay_token
+
+      PropCheck::ReplayToken.load(@config.replay_token, max_bytes: @config.max_replay_token_bytes)
+    end
+
+    private def choice_tape_enabled?
+      @config.choice_tape || !@config.replay_token.nil?
+    end
+
+    private def show_replay_token(output, tape, label)
+      return unless tape
+
+      begin
+        token = PropCheck::ReplayToken.dump(tape, max_bytes: @config.max_replay_token_bytes)
+      rescue Errors::ReplayTokenTooLargeError => e
+        output.puts e.message
+        output.puts ''
+        return
+      end
+
+      output.puts(label + ':')
+      output.puts(token)
+      output.puts ''
+      token
+    end
+
+    private def show_problem_output(problem, generator_results, n_successful, choice_tape, &block)
       output = @config.verbose ? STDOUT : StringIO.new
       output = PropCheck::Property::OutputFormatter.pre_output(output, n_successful, generator_results.root, problem)
-      shrunken_result, shrunken_exception, n_shrink_steps = shrink(generator_results, output, &block)
+      original_token = show_replay_token(output, choice_tape, 'Replay token')
+      shrunken_result, shrunken_exception, n_shrink_steps, shrunken_tape =
+        shrink(generator_results, output, choice_tape, problem, &block)
       output = PropCheck::Property::OutputFormatter.post_output(output, n_shrink_steps, shrunken_result,
                                                                 shrunken_exception)
+      shrunken_token = show_replay_token(output, shrunken_tape, 'Shrunken replay token')
 
-      [output, shrunken_result, shrunken_exception, n_shrink_steps]
+      [
+        output,
+        shrunken_result,
+        shrunken_exception,
+        n_shrink_steps,
+        { original: original_token, shrunken: shrunken_token }
+      ]
     end
 
-    private def shrink(bindings_tree, io, &block)
-      PropCheck::Property::Shrinker.call(bindings_tree, io, @hooks, @config, &block)
+    private def shrink(bindings_tree, io, choice_tape, problem, &block)
+      return PropCheck::Property::ChoiceTapeShrinker.call(
+        bindings_tree, io, @gen, choice_tape, @config, problem, &block
+      ) if choice_tape
+
+      [*PropCheck::Property::Shrinker.call(bindings_tree, io, @hooks, @config, &block), nil]
     end
   end
 end

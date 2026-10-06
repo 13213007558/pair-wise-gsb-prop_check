@@ -33,12 +33,22 @@ module PropCheck
     def generate(**kwargs)
       kwargs = @@default_kwargs.merge(kwargs)
       max_consecutive_attempts = kwargs[:max_consecutive_attempts]
+      choice_tape = kwargs[:choice_tape]
+      top_level = choice_tape.nil? || choice_tape.depth.zero?
+      start_position = choice_tape.position if choice_tape && top_level
 
-      (0..max_consecutive_attempts).each do
-        res = @block.call(**kwargs)
-        next if res.root == :"_PropCheck.filter_me"
+      choice_tape&.begin_generation
+      begin
+        (0..max_consecutive_attempts).each do |attempt|
+          choice_tape.rewind_to(start_position) if choice_tape && top_level && attempt.positive?
+          res = @block.call(**kwargs)
+          next if res.root == :"_PropCheck.filter_me"
 
-        return res
+          choice_tape&.finish! if choice_tape&.top_level_generation?
+          return res
+        end
+      ensure
+        choice_tape&.end_generation
       end
 
       raise Errors::GeneratorExhaustedError, ''"
