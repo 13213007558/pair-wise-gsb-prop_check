@@ -67,11 +67,9 @@ Before releasing v1.0, we want to finish the following:
 - [x] Builtin generation of `Date`s, `Time`s and `DateTime`s.
 - [x] Configuration option to resize all generators given to a particular Property instance.
 - [x] A simple way to create recursive generators
-- [ ] A usage guide.
+- [x] A usage guide.
 
 ## Nice-to-haves
- 
-- Stateful property testing. If implemented at some point, will probably happen in a separate add-on library.
 
 
 ## Installation
@@ -237,6 +235,54 @@ A short summary:
 - Floats shrink similarly to integers.
 - Arrays and hashes shrink to fewer elements, as well as shrinking their elements.
 - Strings shrink to shorter strings, as well as characters earlier in their alphabet.
+
+### Stateful command sequences
+
+Use `PropCheck.forall_commands` to model stateful systems. Each command knows how
+to generate valid arguments, whether its precondition holds, how to advance the
+model, how to execute against the real system, and how to check the postcondition.
+Commands that create resources return symbolic handles (`h0`, `h1`, ...) which
+later commands can reference.
+
+Shrinking removes commands and shrinks arguments. After each change, the sequence
+is replayed against the model, so dangling references and failed preconditions are
+discarded instead of being reported as product failures. Every candidate runs
+against a fresh system created by `setup`, and `cleanup` runs in an `ensure` block.
+
+```ruby
+Create = Struct.new(:value) do
+  def self.generator(_model)
+    PropCheck::Generators.integer.map { |value| new(value) }
+  end
+
+  def self.produces_handle?(_command)
+    true
+  end
+
+  def self.next_state(model, _command, handle)
+    model.merge(created: model[:created] + [handle])
+  end
+
+  def execute(system)
+    system.create(value)
+  end
+end
+
+PropCheck.forall_commands(
+  initial_state: -> { { created: [] } },
+  setup: -> { YourSystem.new },
+  cleanup: ->(system) { system.close },
+  commands: [Create]
+) do |_commands|
+  # The framework executes the shrunken-safe command sequence automatically.
+end
+```
+
+Command postconditions receive a `PropCheck::StateMachine::Execution`, which
+exposes the system, command, result, model before/after, symbolic handles, and
+the returned symbolic handle. A failing postcondition is raised as
+`PropCheck::StateMachine::PostconditionError`, after which PropCheck shrinks the
+command sequence.
 
 ### Builtin Generators
 

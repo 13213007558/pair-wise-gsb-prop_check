@@ -1,3 +1,6 @@
+- Unreleased
+  - Features:
+    - State machine properties generate command sequences with symbolic handles, preconditions, postconditions, fresh setup/cleanup, and reference-aware shrinking.
 - 1.0.2
   - Fixes:
     - When calling `Generator#sample` or `Generator#call`, the options are now merged with the default options _once_, resulting in a slight speedup. (c.f. [#24](https://github.com/Qqwy/ruby-prop_check/pull/24), thank you, @niku!)

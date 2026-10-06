@@ -33,4 +33,5 @@ module PropCheck
   def forall(*args, **kwargs, &block)
     PropCheck::Property.forall(*args, **kwargs, &block)
   end
+  require 'prop_check/state_machine'
 end
