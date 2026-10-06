@@ -354,15 +354,16 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
     private def show_problem_output(problem, generator_results, n_successful, &block)
       output = @config.verbose ? STDOUT : StringIO.new
       output = PropCheck::Property::OutputFormatter.pre_output(output, n_successful, generator_results.root, problem)
-      shrunken_result, shrunken_exception, n_shrink_steps = shrink(generator_results, output, &block)
+      shrunken_result, shrunken_exception, n_shrink_steps, shrink_status = shrink(generator_results, output,
+                                                                                  problem, &block)
       output = PropCheck::Property::OutputFormatter.post_output(output, n_shrink_steps, shrunken_result,
-                                                                shrunken_exception)
+                                                                shrunken_exception, shrink_status)
 
       [output, shrunken_result, shrunken_exception, n_shrink_steps]
     end
 
-    private def shrink(bindings_tree, io, &block)
-      PropCheck::Property::Shrinker.call(bindings_tree, io, @hooks, @config, &block)
+    private def shrink(bindings_tree, io, problem, &block)
+      PropCheck::Property::Shrinker.call(bindings_tree, io, @hooks, @config, problem, &block)
     end
   end
 end

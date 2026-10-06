@@ -18,7 +18,7 @@ module PropCheck::Property::OutputFormatter
     output
   end
 
-  def post_output(output, n_shrink_steps, shrunken_result, shrunken_exception)
+  def post_output(output, n_shrink_steps, shrunken_result, shrunken_exception, shrink_status = nil)
     if n_shrink_steps == 0
       output.puts '(shrinking impossible)'
     else
@@ -29,8 +29,20 @@ module PropCheck::Property::OutputFormatter
       output.puts "Shrunken exception:\n---\n#{shrunken_exception}"
       output.puts "---"
       output.puts ""
+      output.puts minimality_note(shrink_status)
     end
     output
+  end
+
+  def minimality_note(status)
+    return 'Smallest matching shrink candidate found in the explored search space.' unless status
+
+    if status[:complete]
+      'Smallest matching candidate in the fully explored shrink tree.'
+    else
+      'Smallest matching candidate among the explored shrink candidates; '
+        'the shrink tree was not fully explored, so no global minimum is claimed.'
+    end
   end
 
   def print_roots(lazy_tree_val)

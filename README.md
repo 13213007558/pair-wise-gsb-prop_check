@@ -238,6 +238,28 @@ A short summary:
 - Arrays and hashes shrink to fewer elements, as well as shrinking their elements.
 - Strings shrink to shorter strings, as well as characters earlier in their alphabet.
 
+Shrinking follows the failure category of the original counter-example when a `failure_classifier` is configured.
+This prevents a smaller candidate that raises a different error (for example a later `ZeroDivisionError`) from replacing
+the original business assertion. A custom `complexity_function` lets lower-complexity candidates be explored first,
+and `candidate_key_function` provides a stable identity for duplicate values in custom or cyclic shrink trees:
+
+```ruby
+PropCheck
+  .forall(input: my_generator)
+  .with_config(
+    failure_classifier: ->(error, input) { [error.class, error.message] },
+    complexity_function: ->(input) { input.complexity },
+    candidate_key_function: ->(input) { input.id },
+    max_shrink_candidates: 1_000,
+    max_shrink_steps: 1_000
+  ) do |input:|
+    raise MyBusinessError, 'assertion failed' unless valid?(input)
+  end
+```
+
+When either budget stops the search, PropCheck reports the smallest matching candidate found among the explored
+candidates rather than claiming that it is the global minimum.
+
 ### Builtin Generators
 
 PropCheck comes with [many builtin generators in the PropCheck::Generators](https://www.rubydoc.info/github/Qqwy/ruby-prop_check/main/PropCheck/Generators) module.

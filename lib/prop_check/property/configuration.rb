@@ -12,6 +12,7 @@ module PropCheck
     # - `max_generate_attempts:` The amount of times the library tries a generator in total
     #    before raising `Errors::GeneratorExhaustedError`. c.f. `PropCheck::Generator#where`. (Default: 10_000)
     # - `max_shrink_steps:` The amount of times shrinking is attempted. (Default: 10_000)
+    # - `max_shrink_candidates:` The amount of shrink candidates that may be generated. (Default: 10_000)
     # - `max_consecutive_attempts:` The amount of times the library tries a filtered generator consecutively
     #    again before raising `Errors::GeneratorExhaustedError`. c.f. `PropCheck::Generator#where`. (Default: 10_000)
     # - `default_epoch:` The 'base' value to use for date/time generators like
@@ -20,14 +21,24 @@ module PropCheck
     # - `resize_function:` A proc that can be used to resize _all_ generators.
     #    Takes the current size as integer and should return a new integer.
     #   (Default: `proc { |size| size }`)
+    # - `failure_classifier:` An optional proc called with an exception and generated value.
+    #   Shrink candidates are only accepted when their category is equal to the original failure's category.
+    # - `complexity_function:` An optional proc called with a generated value. It should return a
+    #   comparable complexity score; lower-scoring candidates are explored first.
+    # - `candidate_key_function:` An optional proc called with a generated value. Its result is used
+    #   to skip duplicate candidates while traversing a custom or cyclic shrink tree.
     Configuration = Struct.new(
       :verbose,
       :n_runs,
       :max_generate_attempts,
       :max_shrink_steps,
+      :max_shrink_candidates,
       :max_consecutive_attempts,
       :default_epoch,
       :resize_function,
+      :failure_classifier,
+      :complexity_function,
+      :candidate_key_function,
       keyword_init: true
     ) do
       def initialize(
@@ -35,9 +46,13 @@ module PropCheck
         n_runs: 100,
         max_generate_attempts: 10_000,
         max_shrink_steps: 10_000,
+        max_shrink_candidates: 10_000,
         max_consecutive_attempts: 30,
         default_epoch: DateTime.now,
-        resize_function: proc { |size| size }
+        resize_function: proc { |size| size },
+        failure_classifier: nil,
+        complexity_function: nil,
+        candidate_key_function: nil
       )
         super
       end

@@ -141,6 +141,25 @@ RSpec.describe PropCheck do
             expect(error.message).to match(/\(shrinking impossible\)/)
           end
         end
+
+        it 'only accepts shrunk candidates that match the original failure category' do
+          expect do
+            PropCheck
+              .forall(x: PropCheck::Generators.choose(5..20))
+              .with_config(
+                n_runs: 1_000,
+                failure_classifier: proc { |error, input| [error.class, input[:x].positive?] }
+              ) do |x:|
+                raise(ZeroDivisionError, 'different exception') if x.zero?
+                raise ArgumentError, 'business assertion'
+              end
+          end.to raise_error do |error|
+            expect(error).to be_a(ArgumentError)
+            expect(error.message).to include('business assertion')
+            expect(error.prop_check_info[:shrunken_input]).to eq(x: 1)
+            expect(error.message).to include('Smallest matching candidate in the fully explored shrink tree')
+          end
+        end
       end
 
       describe '#where' do

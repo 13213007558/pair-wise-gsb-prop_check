@@ -1,3 +1,8 @@
+- Unreleased
+  - Features:
+    - Optional `failure_classifier`, `complexity_function`, and `candidate_key_function` shrink configuration.
+    - Separate `max_shrink_candidates` and `max_shrink_steps` budgets for lazy or very wide shrink trees.
+    - Failure reports distinguish a fully explored shrink tree from a smallest result found within the explored search space.
 - 1.0.2
   - Fixes:
     - When calling `Generator#sample` or `Generator#call`, the options are now merged with the default options _once_, resulting in a slight speedup. (c.f. [#24](https://github.com/Qqwy/ruby-prop_check/pull/24), thank you, @niku!)
