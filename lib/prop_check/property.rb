@@ -1,8 +1,10 @@
 require 'stringio'
 
+require 'prop_check/choice_tape'
 require 'prop_check/property/configuration'
 require 'prop_check/property/output_formatter'
 require 'prop_check/property/shrinker'
+require 'prop_check/property/choice_tape_shrinker'
 require 'prop_check/hooks'
 module PropCheck
   ##
@@ -239,6 +241,11 @@ module PropCheck
       duplicate
     end
 
+    def replay_choice_tape(token, &block)
+      duplicate = with_config(replay_choice_tape: token, choice_tape: true)
+      block ? duplicate.check(&block) : duplicate
+    end
+
     ##
     # Checks the property (after settings have been altered using the other instance methods in this class.)
     def check(&block)
@@ -246,6 +253,7 @@ module PropCheck
 
       n_runs = 0
       n_successful = 0
+      return replay_check(&block) if @config.replay_choice_tape
 
       # Loop stops at first exception
       attempts_enum(@gen).each do |generator_result|
@@ -301,16 +309,19 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
     rescue SignalException, SystemExit
       raise
 
+    rescue PropCheck::Errors::ChoiceTapeError
+      raise
+
     # We want to capture _all_ exceptions (even low-level ones) here,
     # so we can shrink to find their cause.
     # don't worry: they all get reraised
     rescue Exception => e
-      output, shrunken_result, shrunken_exception, n_shrink_steps = show_problem_output(e, generator_result,
-                                                                                        n_successful, &block)
+      output, shrunken_result, shrunken_exception, n_shrink_steps, _original_token, choice_tape_token =
+        show_problem_output(e, generator_result, n_successful, &block)
       output_string = output.is_a?(StringIO) ? output.string : e.message
 
       e.define_singleton_method :prop_check_info do
-        {
+        info = {
           original_input: generator_result.root,
           original_exception_message: e.message,
           shrunken_input: shrunken_result,
@@ -318,6 +329,8 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
           n_successful: n_successful,
           n_shrink_steps: n_shrink_steps
         }
+        info[:choice_tape_token] = choice_tape_token if choice_tape_token
+        info
       end
 
       raise e, output_string, e.backtrace
@@ -331,15 +344,51 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
     end
 
     private def raw_attempts_enum(binding_generator)
+      replay_attempts_enum(binding_generator) || recorded_attempts_enum(binding_generator)
+    end
+
+    private def replay_check(&block)
+      attempts_enum(@gen).each do |generator_result|
+        PropCheck::Helper.call_splatted(generator_result.root, &block)
+      end
+
+      true
+    end
+
+    private def replay_attempts_enum(binding_generator)
+      return nil unless @config.replay_choice_tape
+
+      payload = PropCheck::ChoiceTape.decode(@config.replay_choice_tape)
+      tape = PropCheck::ChoiceTape.replay(payload)
+      result = binding_generator.generate(
+        size: tape.size,
+        rng: tape,
+        max_consecutive_attempts: @config.max_consecutive_attempts,
+        config: @config
+      )
+      tape.finish!
+      result.choice_tape = tape
+      [result].lazy
+    end
+
+    private def recorded_attempts_enum(binding_generator)
       rng = Random.new
       size = 1
+
       (0...@config.max_generate_attempts)
         .lazy
         .map do
         generator_size = @config.resize_function.call(size).to_i
+        choice_tape =
+          if @config.choice_tape
+            PropCheck::ChoiceTape.record(generator_size, rng)
+          else
+            rng
+          end
+
         binding_generator.generate(
           size: generator_size,
-          rng: rng,
+          rng: choice_tape,
           max_consecutive_attempts: @config.max_consecutive_attempts,
           config: @config
         )
@@ -353,16 +402,39 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
 
     private def show_problem_output(problem, generator_results, n_successful, &block)
       output = @config.verbose ? STDOUT : StringIO.new
-      output = PropCheck::Property::OutputFormatter.pre_output(output, n_successful, generator_results.root, problem)
-      shrunken_result, shrunken_exception, n_shrink_steps = shrink(generator_results, output, &block)
+      original_choice_tape_token = token_for(generator_results.choice_tape)
+      output = PropCheck::Property::OutputFormatter.pre_output(
+        output, n_successful, generator_results.root, problem, original_choice_tape_token
+      )
+      shrunken_result, shrunken_exception, n_shrink_steps, shrunken_choice_tape =
+        shrink(generator_results, output, problem, &block)
       output = PropCheck::Property::OutputFormatter.post_output(output, n_shrink_steps, shrunken_result,
-                                                                shrunken_exception)
+                                                                shrunken_exception,
+                                                                token_for(shrunken_choice_tape))
 
-      [output, shrunken_result, shrunken_exception, n_shrink_steps]
+      [
+        output,
+        shrunken_result,
+        shrunken_exception,
+        n_shrink_steps,
+        original_choice_tape_token,
+        token_for(shrunken_choice_tape) || original_choice_tape_token
+      ]
     end
 
-    private def shrink(bindings_tree, io, &block)
-      PropCheck::Property::Shrinker.call(bindings_tree, io, @hooks, @config, &block)
+    private def shrink(bindings_tree, io, original_exception = nil, &block)
+      if bindings_tree.choice_tape
+        PropCheck::Property::ChoiceTapeShrinker.call(@gen, bindings_tree, io, @config, original_exception, &block)
+      else
+        result = PropCheck::Property::Shrinker.call(bindings_tree, io, @hooks, @config, &block)
+        result + [nil]
+      end
+    end
+
+    private def token_for(choice_tape)
+      return nil unless choice_tape
+
+      PropCheck::ChoiceTape.encode(choice_tape)
     end
   end
 end

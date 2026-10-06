@@ -38,6 +38,7 @@ module PropCheck
         res = @block.call(**kwargs)
         next if res.root == :"_PropCheck.filter_me"
 
+        res.choice_tape = kwargs[:rng] if kwargs[:rng].is_a?(PropCheck::ChoiceTape)
         return res
       end
 

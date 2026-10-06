@@ -5,7 +5,7 @@ require 'pp'
 module PropCheck::Property::OutputFormatter
   extend self
 
-  def pre_output(output, n_successful, generated_root, problem)
+  def pre_output(output, n_successful, generated_root, problem, original_choice_tape_token = nil)
     output.puts ""
     output.puts "(after #{n_successful} successful property test runs)"
     output.puts "Failed on: "
@@ -13,12 +13,13 @@ module PropCheck::Property::OutputFormatter
     output.puts ""
     output.puts "Exception message:\n---\n#{problem}"
     output.puts "---"
+    output.puts "Original choice tape token:\n`#{original_choice_tape_token}`" if original_choice_tape_token
     output.puts ""
 
     output
   end
 
-  def post_output(output, n_shrink_steps, shrunken_result, shrunken_exception)
+  def post_output(output, n_shrink_steps, shrunken_result, shrunken_exception, shrunken_choice_tape_token = nil)
     if n_shrink_steps == 0
       output.puts '(shrinking impossible)'
     else
@@ -28,6 +29,9 @@ module PropCheck::Property::OutputFormatter
       output.puts ""
       output.puts "Shrunken exception:\n---\n#{shrunken_exception}"
       output.puts "---"
+    end
+    if shrunken_choice_tape_token
+      output.puts "Replay choice tape token:\n`#{shrunken_choice_tape_token}`"
       output.puts ""
     end
     output

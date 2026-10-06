@@ -8,6 +8,8 @@ module PropCheck
     #
     # ## Available options
     # - `verbose:` When true, shows detailed options of the data generation and shrinking process. (Default: false)
+    # - `choice_tape:` When true, records finite generator choices and includes a replay token after failure. (Default: false)
+    # - `replay_choice_tape:` Replays the given versioned choice tape token without drawing new random numbers. (Default: nil)
     # - `n_runs:` The amount of iterations each `forall` is being run.
     # - `max_generate_attempts:` The amount of times the library tries a generator in total
     #    before raising `Errors::GeneratorExhaustedError`. c.f. `PropCheck::Generator#where`. (Default: 10_000)
@@ -22,6 +24,8 @@ module PropCheck
     #   (Default: `proc { |size| size }`)
     Configuration = Struct.new(
       :verbose,
+      :choice_tape,
+      :replay_choice_tape,
       :n_runs,
       :max_generate_attempts,
       :max_shrink_steps,
@@ -32,6 +36,8 @@ module PropCheck
     ) do
       def initialize(
         verbose: false,
+        choice_tape: false,
+        replay_choice_tape: nil,
         n_runs: 100,
         max_generate_attempts: 10_000,
         max_shrink_steps: 10_000,

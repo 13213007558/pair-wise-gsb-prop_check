@@ -1,4 +1,5 @@
 require "prop_check/version"
+require 'prop_check/choice_tape'
 require 'prop_check/property'
 require 'prop_check/generator'
 require 'prop_check/generators'
@@ -22,6 +23,9 @@ module PropCheck
     class UserError < Error; end
     class GeneratorExhaustedError < UserError; end
     class MaxShrinkStepsExceededError < UserError; end
+    class ChoiceTapeError < Error; end
+    class ChoiceTapeTokenError < ChoiceTapeError; end
+    class ChoiceTapeMismatchError < ChoiceTapeError; end
   end
 
   extend self
@@ -32,5 +36,9 @@ module PropCheck
   # See the README for more details.
   def forall(*args, **kwargs, &block)
     PropCheck::Property.forall(*args, **kwargs, &block)
+  end
+
+  def replay_choice_tape(*args, token:, **kwargs, &block)
+    PropCheck::Property.forall(*args, **kwargs).replay_choice_tape(token).check(&block)
   end
 end

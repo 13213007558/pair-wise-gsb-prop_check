@@ -9,10 +9,11 @@ module PropCheck
 
     include Enumerable
 
-    attr_accessor :root
-    def initialize(root, children = [].lazy)
+    attr_accessor :root, :choice_tape
+    def initialize(root, children = [].lazy, choice_tape: nil)
       @root = root
       @children = children
+      @choice_tape = choice_tape
     end
 
     def children
@@ -27,7 +28,7 @@ module PropCheck
     def map(&block)
       new_root = block.call(root)
       new_children = children.map { |child_tree| child_tree.map(&block) }
-      LazyTree.new(new_root, new_children)
+      LazyTree.new(new_root, new_children, choice_tape: choice_tape)
     end
 
     ##
@@ -59,7 +60,7 @@ module PropCheck
 
       combined_children = PropCheck::Helper.lazy_append(inner_children, mapped_children)
 
-      LazyTree.new(inner_root, combined_children)
+      LazyTree.new(inner_root, combined_children, choice_tape: inner_tree.choice_tape || choice_tape)
     end
 
     ##
@@ -110,7 +111,8 @@ module PropCheck
       # new_children = trees.permutations.flat_map(&:children)
       new_children = permutations(trees).map { |children| LazyTree.zip(children) }
       # p new_children
-      LazyTree.new(new_root, new_children)
+      choice_tape = trees.map(&:choice_tape).compact.first
+      LazyTree.new(new_root, new_children, choice_tape: choice_tape)
     end
 
     private_class_method def self.permutations(trees)
