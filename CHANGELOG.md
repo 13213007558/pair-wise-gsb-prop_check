@@ -1,3 +1,6 @@
+- Unreleased
+  - Additions:
+    - PropCheck::Linearizability: a linearizability checker for short histories of a concurrent data structure. Provide invocation/return boundary events plus a sequential model via check/assert_linearizable and it searches for a legal total order consistent with every observation. Non-overlapping operations keep their real-time order, overlapping operations may be reordered, equivalent model states can be merged with a user-supplied stable key, and still-unreturned operations require an explicit pending_policy (:complete or :discard). Exhausting the search budget returns :undecided, never :non_linearizable.
 - 1.0.2
   - Fixes:
     - When calling `Generator#sample` or `Generator#call`, the options are now merged with the default options _once_, resulting in a slight speedup. (c.f. [#24](https://github.com/Qqwy/ruby-prop_check/pull/24), thank you, @niku!)

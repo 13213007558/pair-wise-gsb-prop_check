@@ -312,6 +312,52 @@ although above are the most generally useful ones.
 
 ## Usage within Rails / with a database
 
+ ### Checking linearizability of a concurrent data structure
+
+ `PropCheck::Linearizability` checks whether a short execution history of operations against a concurrent container is *linearizable*: whether the operations can be reordered into a legal sequential order that is consistent with every observed call and return, while keeping non-overlapping operations in their real-time order.
+
+ A history is an ordered list of invocation and return boundary entries. Each completed operation is a pair of entries:
+
+ ```ruby
+ history = [
+   [:invoke, 1, :enq, 0], [:ok, 1, :enq],
+   [:invoke, 2, :deq],    [:ok, 2, :deq, 0]
+ ]
+ ```
+
+ Pass the history together with the initial model state and a block describing one legal sequential step. The block receives the current state and an operation (`function`, `arguments`, `result`, `process`); return the next state, or `PropCheck::Linearizability::REJECT` when the operation cannot happen in that state:
+
+ ```ruby
+ result = PropCheck::Linearizability.check(history, initial_state: []) do |queue, op|
+   case op.function
+   when :enq then queue + [op.arguments]
+   when :deq
+     next PropCheck::Linearizability::REJECT if queue.empty?
+     op.result == queue.first ? queue.drop(1) : PropCheck::Linearizability::REJECT
+   end
+ end
+
+ result.verdict       # :linearizable | :non_linearizable | :undecided
+ result.witness       # ordered list of operations forming a legal sequential witness
+ result.history       # normalised, replayable history (shrunk when non-linearizable)
+ ```
+
+ Overlapping operations may be reordered; operations that returned before another one was invoked keep that order. Additional options:
+
+ * `key:` — a block mapping a model state to a stable key, used to merge equivalent search branches.
+ * `budget:` — maximum number of attempted model steps. When the budget is exhausted the verdict is `:undecided` (never `:non_linearizable`).
+ * `pending_policy:` — required when the history contains invocations without a return: `:discard` assumes they never took effect; `:complete` assumes they completed after the last observed boundary (the step block is called with `result: nil`).
+
+ Inside a property test, use `assert_linearizable`, which raises a counterexample-carrying error instead of returning a result:
+
+ ```ruby
+ PropCheck.forall(histories: history_generator) do |histories:|
+   PropCheck::Linearizability.assert_linearizable(histories, initial_state: []) do |queue, op|
+     # ...model step...
+   end
+ end
+ ```
+
 Using PropCheck for unit tests in a Rails, Sinatra, Hanami, etc. project is very easy.
 Here are some simple recommendations for the best results:
 - Tests that do not need to use the DB at all are usually 10x-100x faster. Faster tests means that you can configure PropCheck to do more test runs.
