@@ -210,6 +210,48 @@ This is a good example of the kind of conceptual bugs that PropCheck (and proper
 are able to check for.
 
 
+### Checking concurrent histories
+
+`PropCheck::Linearizability.check` searches for a legal sequential execution that matches a short concurrent operation history.
+Each operation records its call boundary, return boundary, arguments and observed result.
+Operations whose intervals do not overlap keep their real-time order; overlapping operations may be reordered.
+
+The sequential model receives the current state and an operation, and returns `[new_state, expected_result]`.
+
+```ruby
+queue_model = lambda do |queue, operation|
+  queue = queue.dup
+  case operation.name
+  when :enqueue
+    queue.push(operation.arguments.first)
+    [queue, nil]
+  when :dequeue
+    [queue.drop(1), queue.first]
+  end
+end
+
+history = [
+  {id: :a, name: :enqueue, arguments: [1], result: nil, call_time: 0, return_time: 3, thread_id: 1},
+  {id: :b, name: :enqueue, arguments: [2], result: nil, call_time: 1, return_time: 2, thread_id: 2},
+  {id: :read, name: :dequeue, arguments: [], result: 2, call_time: 4, return_time: 5, thread_id: 3}
+]
+
+outcome = PropCheck::Linearizability.check(history, queue_model, initial_state: [])
+outcome.status       # :linearizable
+outcome.witness_ids  # [:b, :a, :read]
+```
+
+Pass `state_key:` with a proc that returns a stable key when different model states are equivalent.
+This merges equivalent search branches. Pending operations require an explicit policy:
+
+- `pending: :complete` allows a pending operation to take effect at a legal point after its call.
+- `pending: :discard` removes pending operations from the sequential witness.
+
+`budget:` limits the number of model transitions explored. When it is reached, the result is `:undetermined`;
+this never proves non-linearizability. A definite `:nonlinearizable` result also contains a minimized, replayable `small_history`.
+Use `PropCheck::Linearizability.assert_linearizable!` inside a property or test to raise that history as an assertion failure.
+
+
 #### Shrinking
 
 When a failure is found, PropCheck will re-run the block given to `forall` to test

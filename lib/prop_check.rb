@@ -24,6 +24,8 @@ module PropCheck
     class MaxShrinkStepsExceededError < UserError; end
   end
 
+  require 'prop_check/linearizability'
+
   extend self
 
   ##
