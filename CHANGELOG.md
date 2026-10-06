@@ -1,3 +1,7 @@
+- Unreleased
+  - Features:
+    - Add `Property#classify`, `Property#collect`, and `Property#cover` for category counts and minimum-coverage declarations.
+    - Successful checks now return a coverage report. Coverage uses a one-sided Clopper-Pearson binomial interval, condition-specific denominators, and a fixed maximum run budget. Shrink re-runs are excluded.
 - 1.0.2
   - Fixes:
     - When calling `Generator#sample` or `Generator#call`, the options are now merged with the default options _once_, resulting in a slight speedup. (c.f. [#24](https://github.com/Qqwy/ruby-prop_check/pull/24), thank you, @niku!)
@@ -51,3 +55,4 @@
 - 0.11.0 - Improved syntax to support Ruby 2.7 and up without deprecation warnings, full support for `#where`.
 - 0.10.0 - Some bugfixes, support for `#where`
 - 0.8.0 - New syntax that is more explicit, passng generated values to blocks as parameters.
+- 1.0.2

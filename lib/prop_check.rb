@@ -22,6 +22,14 @@ module PropCheck
     class UserError < Error; end
     class GeneratorExhaustedError < UserError; end
     class MaxShrinkStepsExceededError < UserError; end
+    class CoverageNotMetError < UserError
+      attr_reader :coverage_report
+
+      def initialize(message, coverage_report)
+        super(message)
+        @coverage_report = coverage_report
+      end
+    end
   end
 
   extend self

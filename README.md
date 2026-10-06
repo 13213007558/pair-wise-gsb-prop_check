@@ -238,6 +238,56 @@ A short summary:
 - Arrays and hashes shrink to fewer elements, as well as shrinking their elements.
 - Strings shrink to shorter strings, as well as characters earlier in their alphabet.
 
+#### Classification and coverage
+
+Running 100 random cases does not prove that rare branches were exercised.
+Use `#classify` to attach fixed labels to successful samples, or `#collect` to compute labels from the sample itself.
+Samples removed by `#where` are not counted, and a sample can have more than one label.
+
+```ruby
+report = PropCheck.forall(x: G.integer)
+               .classify(:zero) { |x:| x.zero? }
+               .classify(:positive) { |x:| x.positive? }
+               .collect { |x:| x.even? ? :even : :odd }
+               .check { |x:| expect(x + 0).to eq(x) }
+
+report.n_successful    # number of samples that reached the property block
+report.category_counts # e.g. { positive: 50, even: 48, odd: 52 }
+```
+
+Use `#cover` to declare a minimum proportion with confidence. The conclusion uses a one-sided
+Clopper-Pearson binomial interval over the full sample budget. `applicable:` provides a separate
+denominator for conditional coverage; membership is the block passed to `#cover`.
+
+```ruby
+report = PropCheck.forall(x: G.integer)
+               .with_config(max_coverage_runs: 1000)
+               .cover(:positive, 0.2, applicable: ->(x:) { x != 0 }) { |x:| x.positive? }
+               .check { |x:| expect(x * x).to be >= 0 }
+
+report.requirements.fetch(0).status # :met, :inconclusive, or :below
+report.satisfied?
+```
+
+If the evidence is insufficient after the budget, the requirement is `:inconclusive`; that is not
+an ordinary property failure. When the confidence upper bound is below the requested proportion, the
+requirement is conclusively `:below`, and `#check` raises `PropCheck::Errors::CoverageNotMetError`
+with the report attached as `#coverage_report`. Repeated block executions used only for shrinking
+are not included in the statistics.
+
+For exact boundary tests, avoid relying on random category frequency. Create a fixed sequence and
+wrap each value in a `LazyTree`:
+
+```ruby
+values = [:common] * 28 + [:rare]
+sequence = values.cycle
+fixed = PropCheck::Generator.new { PropCheck::LazyTree.wrap(sequence.next) }
+```
+
+This also makes narrow-distribution failures easy to demonstrate: a generator that only yields
+`:small` can pass every assertion in the property while a `cover(:large, ...)` requirement reports
+`:below`.
+
 ### Builtin Generators
 
 PropCheck comes with [many builtin generators in the PropCheck::Generators](https://www.rubydoc.info/github/Qqwy/ruby-prop_check/main/PropCheck/Generators) module.

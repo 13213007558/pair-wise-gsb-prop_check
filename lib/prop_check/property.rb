@@ -1,6 +1,7 @@
 require 'stringio'
 
 require 'prop_check/property/configuration'
+require 'prop_check/property/coverage'
 require 'prop_check/property/output_formatter'
 require 'prop_check/property/shrinker'
 require 'prop_check/hooks'
@@ -65,6 +66,9 @@ module PropCheck
     def initialize(*bindings, **kwbindings)
       @config = self.class.configuration
       @hooks = PropCheck::Hooks.new
+      @classifiers = []
+      @collectors = []
+      @coverage_requirements = []
 
       @gen = gen_from_bindings(bindings, kwbindings) unless bindings.empty? && kwbindings.empty?
       freeze
@@ -98,11 +102,7 @@ module PropCheck
     # you can immediately pass a block to this method.
     # (so `forall(a: Generators.integer).with_config(verbose: true) do ... end` is the same as `forall(a: Generators.integer).with_config(verbose: true).check do ... end`)
     def with_config(**config, &block)
-      duplicate = dup
-      duplicate.instance_variable_set(:@config, @config.merge(config))
-      duplicate.freeze
-
-      duplicate.check(&block)
+      duplicate_with_state(config: @config.merge(config)).check(&block)
     end
 
     ##
@@ -169,10 +169,7 @@ module PropCheck
     def with_bindings(*bindings, **kwbindings)
       raise ArgumentError, 'No bindings specified!' if bindings.empty? && kwbindings.empty?
 
-      duplicate = dup
-      duplicate.instance_variable_set(:@gen, gen_from_bindings(bindings, kwbindings))
-      duplicate.freeze
-      duplicate
+      duplicate_with_state(gen: gen_from_bindings(bindings, kwbindings))
     end
 
     ##
@@ -189,10 +186,7 @@ module PropCheck
               'No generator bindings specified! #where should be called after `#forall` or `#with_bindings`.'
       end
 
-      duplicate = dup
-      duplicate.instance_variable_set(:@gen, @gen.where(&condition))
-      duplicate.freeze
-      duplicate
+      duplicate_with_state(gen: @gen.where(&condition))
     end
 
     ##
@@ -201,10 +195,7 @@ module PropCheck
     # This is useful to add setup logic
     # When called multiple times, earlier-added hooks will be called _before_ `hook` is called.
     def before(&hook)
-      duplicate = dup
-      duplicate.instance_variable_set(:@hooks, @hooks.add_before(&hook))
-      duplicate.freeze
-      duplicate
+      duplicate_with_state(hooks: @hooks.add_before(&hook))
     end
 
     ##
@@ -213,10 +204,7 @@ module PropCheck
     # This is useful to add teardown logic
     # When called multiple times, earlier-added hooks will be called _after_ `hook` is called.
     def after(&hook)
-      duplicate = dup
-      duplicate.instance_variable_set(:@hooks, @hooks.add_after(&hook))
-      duplicate.freeze
-      duplicate
+      duplicate_with_state(hooks: @hooks.add_after(&hook))
     end
 
     ##
@@ -233,10 +221,49 @@ module PropCheck
     # it is possible for the code after `yield` not to be called.
     # So make sure that cleanup logic is wrapped with the `ensure` keyword.
     def around(&hook)
-      duplicate = dup
-      duplicate.instance_variable_set(:@hooks, @hooks.add_around(&hook))
-      duplicate.freeze
-      duplicate
+      duplicate_with_state(hooks: @hooks.add_around(&hook))
+    end
+
+    ##
+    # Assigns one or more fixed labels to every successful sample for which `condition` is truthy.
+    # A sample may receive multiple labels, and filtered-out samples are never classified.
+    def classify(*labels, &condition)
+      raise ArgumentError, '#classify requires at least one label' if labels.empty?
+      condition ||= proc { true }
+
+      with_coverage_copy do
+        @classifiers << CoverageTracker::Classifier.new(labels, condition)
+      end
+    end
+
+    ##
+    # Calls `classifier` with each successful sample and counts every returned label.
+    # Returning nil labels nothing; returning an array assigns multiple labels.
+    def collect(&classifier)
+      raise ArgumentError, '#collect requires a block' unless classifier
+
+      with_coverage_copy do
+        @collectors << CoverageTracker::Collector.new(classifier)
+      end
+    end
+
+    ##
+    # Declares that `label` should occur in at least `minimum` proportion of applicable samples.
+    # `applicable` defines the condition-specific denominator; the block defines membership.
+    # Coverage is checked using a one-sided exact binomial confidence bound after the run budget.
+    def cover(label, minimum, applicable: nil, confidence: nil, &condition)
+      unless minimum.is_a?(Numeric) && minimum >= 0 && minimum <= 1
+        raise ArgumentError, 'minimum coverage must be a number between 0 and 1'
+      end
+      confidence ||= @config.coverage_confidence
+      unless confidence.is_a?(Numeric) && confidence > 0 && confidence < 1
+        raise ArgumentError, 'coverage confidence must be a number between 0 and 1'
+      end
+
+      requirement = CoverageTracker::Requirement.new(label, minimum, applicable, condition, confidence)
+      with_coverage_copy do
+        @coverage_requirements << requirement
+      end
     end
 
     ##
@@ -246,15 +273,21 @@ module PropCheck
 
       n_runs = 0
       n_successful = 0
+      coverage = new_coverage_tracker
+      run_limit = planned_runs
 
       # Loop stops at first exception
-      attempts_enum(@gen).each do |generator_result|
+      attempts_enum(@gen, run_limit).each do |generator_result|
         n_runs += 1
         check_attempt(generator_result, n_successful, &block)
+        coverage.record(generator_result.root)
         n_successful += 1
       end
 
-      ensure_not_exhausted!(n_runs)
+      ensure_not_exhausted!(n_runs, run_limit)
+      report = coverage.report(n_successful, @config.n_runs, run_limit)
+      ensure_coverage_met!(report)
+      report
     end
 
     private def gen_from_bindings(bindings, kwbindings)
@@ -276,21 +309,31 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
       end
     end
 
-    private def ensure_not_exhausted!(n_runs)
-      return if n_runs >= @config.n_runs
+    private def ensure_not_exhausted!(n_runs, required_runs)
+      return if n_runs >= required_runs
 
-      raise_generator_exhausted!
+      raise_generator_exhausted!(required_runs)
     end
 
-    private def raise_generator_exhausted!
+    private def raise_generator_exhausted!(required_runs)
       raise Errors::GeneratorExhaustedError, ''"
-        Could not perform `n_runs = #{@config.n_runs}` runs,
+        Could not perform `n_runs = #{required_runs}` runs,
         (exhausted #{@config.max_generate_attempts} tries)
         because too few generator results were adhering to
         the `where` condition.
 
         Try refining your generators instead.
         "''
+    end
+
+    private def ensure_coverage_met!(report)
+      failing_requirement = report.requirements.find(&:below?)
+      return unless failing_requirement
+
+      raise PropCheck::Errors::CoverageNotMetError.new(
+        "Minimum coverage was conclusively not met for #{failing_requirement.label.inspect}.\n#{report}",
+        report
+      )
     end
 
     private def check_attempt(generator_result, n_successful, &block)
@@ -323,11 +366,44 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
       raise e, output_string, e.backtrace
     end
 
-    private def attempts_enum(binding_generator)
+    private def attempts_enum(binding_generator, run_limit)
       @hooks
         .wrap_enum(raw_attempts_enum(binding_generator))
         .lazy
-        .take(@config.n_runs)
+        .take(run_limit)
+    end
+
+    private def with_coverage_copy(&mutation)
+      duplicate = duplicate_with_state
+      duplicate.instance_exec(&mutation)
+      duplicate.freeze
+      duplicate
+    end
+
+    private def new_coverage_tracker
+      CoverageTracker.new(
+        classifiers: @classifiers,
+        collectors: @collectors,
+        requirements: @coverage_requirements
+      )
+    end
+
+    private def planned_runs
+      return @config.n_runs if @coverage_requirements.empty?
+
+      @config.max_coverage_runs
+    end
+
+    private def duplicate_with_state(**changes)
+      duplicate = dup
+      duplicate.instance_variable_set(:@classifiers, @classifiers.dup)
+      duplicate.instance_variable_set(:@collectors, @collectors.dup)
+      duplicate.instance_variable_set(:@coverage_requirements, @coverage_requirements.dup)
+      changes.each do |name, value|
+        duplicate.instance_variable_set("@#{name}", value)
+      end
+      duplicate.freeze
+      duplicate
     end
 
     private def raw_attempts_enum(binding_generator)
