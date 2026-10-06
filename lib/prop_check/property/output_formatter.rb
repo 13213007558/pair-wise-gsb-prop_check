@@ -18,19 +18,41 @@ module PropCheck::Property::OutputFormatter
     output
   end
 
-  def post_output(output, n_shrink_steps, shrunken_result, shrunken_exception)
+  def post_output(output, n_shrink_steps, shrunken_result, shrunken_exception, shrink_status, config)
     if n_shrink_steps == 0
-      output.puts '(shrinking impossible)'
+      output.puts 'Smallest failing input in the explored shrink tree:'
+      output.puts "`#{print_roots(shrunken_result)}`"
+      output.puts "Exception:\n---\n#{shrunken_exception}"
+      output.puts '---'
+      output.puts budget_note(shrink_status, config) if shrink_status != :complete
     else
       output.puts ''
-      output.puts "Shrunken input (after #{n_shrink_steps} shrink steps):"
+      output.puts "Shrunken input (after #{n_shrink_steps} shrink steps, #{result_phrase(shrink_status)}):"
       output.puts "`#{print_roots(shrunken_result)}`"
       output.puts ""
       output.puts "Shrunken exception:\n---\n#{shrunken_exception}"
       output.puts "---"
       output.puts ""
+      output.puts budget_note(shrink_status, config)
     end
     output
+  end
+
+  def result_phrase(shrink_status)
+    return 'smallest in the explored shrink tree' if shrink_status == :complete
+
+    'smallest found within the explored portion of the shrink tree'
+  end
+
+  def budget_note(shrink_status, config)
+    case shrink_status
+    when :property_budget_exhausted
+      "(Note: Reached #{config.max_shrink_steps} property executions during shrinking.)"
+    when :candidate_budget_exhausted
+      "(Note: Reached #{config.max_shrink_candidates} generated shrink candidates; shrinking is not proven globally minimal.)"
+    else
+      '(shrinking impossible)'
+    end
   end
 
   def print_roots(lazy_tree_val)

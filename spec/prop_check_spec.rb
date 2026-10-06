@@ -1,4 +1,6 @@
 RSpec.describe PropCheck do
+  ShrinkerSpecBusinessError = Class.new(StandardError)
+
   it 'has a version number' do
     expect(PropCheck::VERSION).not_to be nil
   end
@@ -121,16 +123,16 @@ RSpec.describe PropCheck do
             expect(error.message).to match(/\(after \d+ successful property test runs\)/m)
             expect(error.message).to match(/Exception message:/m)
 
-            # Test basic shrinking real quick:
-            expect(error.message).to match(/Shrunken input \(after \d+ shrink steps\):/m)
-            expect(error.message).to match(/Shrunken exception:/m)
+            expect(error.message)
+              .to match(/Shrunken input \(after \d+ shrink steps, smallest[\s\S]*Shrunken exception:/m)
+              .or match(/Smallest failing input in the explored shrink tree/m)
 
             expect(defined?(error.prop_check_info)).to eq('method')
             # p error.prop_check_info
           end
         end
 
-        it "generates an error with 'shrinking impossible' if the value cannot be shrunk further" do
+        it 'shows the original failing input when the shrink tree has no further candidates' do
           srand(42)
           expect do
             PropCheck.forall(PropCheck::Generators.array(PropCheck::Generators.integer)) do |array|
@@ -138,7 +140,7 @@ RSpec.describe PropCheck do
             end
           end.to raise_error do |error|
             expect(error).to be_a(ZeroDivisionError)
-            expect(error.message).to match(/\(shrinking impossible\)/)
+            expect(error.message).to match(/Smallest failing input in the explored shrink tree/)
           end
         end
       end
@@ -185,6 +187,35 @@ RSpec.describe PropCheck do
           expect(PropCheck.forall(foo: PropCheck::Generators.integer).configuration.n_runs).to be 42
         end
       end
+
+      describe 'shrink failure classification' do
+        it 'keeps the original failure category and labels bounded shrinking as explored-only' do
+          tree = PropCheck::LazyTree.new(11, [
+            PropCheck::LazyTree.new(10),
+            PropCheck::LazyTree.new(0)
+          ])
+          generator = PropCheck::Generator.new { tree }
+
+          expect do
+            PropCheck.forall(generator).with_config(
+              max_shrink_steps: 2,
+              failure_classifier: ->(error) { error.class },
+              complexity_function: ->(value) { value },
+              candidate_key_function: ->(value) { value }
+            ) do |value|
+              raise ShrinkerSpecBusinessError, 'business assertion' if value.positive?
+
+              raise ZeroDivisionError, 'divided by 0'
+            end
+          end.to raise_error(ShrinkerSpecBusinessError) do |error|
+            expect(error.message).to match(/smallest found within the explored portion of the shrink tree/)
+            expect(error.message).to match(/Reached 2 property executions during shrinking/)
+            expect(error.prop_check_info[:shrunken_input]).to eq(10)
+            expect(error.prop_check_info[:shrunken_exception]).to be_a(ShrinkerSpecBusinessError)
+          end
+        end
+      end
+
       describe 'hooks' do
         describe '#before' do
           it 'calls the before block before every generated value (even filtered ones)' do

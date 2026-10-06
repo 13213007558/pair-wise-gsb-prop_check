@@ -230,6 +230,34 @@ This means for example that if something only goes for wrong for `x >= 8`, the p
 
 and thus the simplified case of `x = 8` is shown in the output.
 
+Shrinking never proves a global optimum beyond the candidates that were explored.
+When a shrink budget is reached, the output therefore describes the result as the smallest one found
+within the explored portion of the shrink tree.
+
+For custom or structured values, you can control this process with:
+
+- `failure_classifier`: categorizes an exception. A candidate is only used as a counter-example when its category matches the original failure.
+- `complexity_function`: returns a comparable complexity value; lower-complexity candidates are explored first.
+- `candidate_key_function`: returns a stable hashable key used to skip duplicate candidates in lazy or cyclic shrink trees.
+- `max_shrink_steps`: limits property executions during shrinking.
+- `max_shrink_candidates`: limits how many child candidates may be generated.
+
+```ruby
+PropCheck
+  .forall(input: input_generator)
+  .with_config(
+    failure_classifier: ->(error) { error.is_a?(MyAssertionError) ? :business : :other },
+    complexity_function: ->(input) { input.nodes.length },
+    candidate_key_function: ->(input) { input.canonical_id },
+    max_shrink_steps: 1_000,
+    max_shrink_candidates: 5_000
+  ) do |input:|
+  check_business_invariant!(input)
+end
+```
+
+This keeps a candidate that raises `ZeroDivisionError` from replacing the original business assertion failure.
+
 The documentation of the provided generators explain how they shrink.
 A short summary:
 - Integers shrink to numbers closer to zero.
