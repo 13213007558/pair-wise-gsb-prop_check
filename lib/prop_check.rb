@@ -22,6 +22,7 @@ module PropCheck
     class UserError < Error; end
     class GeneratorExhaustedError < UserError; end
     class MaxShrinkStepsExceededError < UserError; end
+    class CoverageViolationError < UserError; end
   end
 
   extend self

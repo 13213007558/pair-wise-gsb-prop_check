@@ -62,6 +62,7 @@ Before releasing v1.0, we want to finish the following:
 - [x] Filtering generator outputs.
 - [x] Before/after/around hooks to add setup/teardown logic to be called before/after/around each time a check is run with new data.
 - [x] Possibility to resize generators.
+- [x] Coverage labels, category collection and minimum coverage requirements.
 - [x] `#instance` generator to allow the easy creation of generators for custom datatypes.
 - [x] Builtin generation of `Set`s
 - [x] Builtin generation of `Date`s, `Time`s and `DateTime`s.
@@ -208,6 +209,71 @@ divided by 0
 Clearly we forgot to handle the case of an empty array being passed to the function.
 This is a good example of the kind of conceptual bugs that PropCheck (and property-based testing in general)
 are able to check for.
+
+
+#### Coverage and classification
+
+Running 100 examples does not prove that interesting or rare branches were exercised.
+Use `#classify`, `#collect` and `#cover` to observe which successful inputs reached which categories.
+Filtered-out values are never included in the successful denominator, and shrink attempts are never counted.
+
+`#classify` records a fixed category when a predicate is true. One example can belong to several categories:
+
+```ruby
+report = PropCheck
+  .forall(numbers: G.array(G.integer))
+  .classify(:empty) { |numbers:| numbers.empty? }
+  .classify(:contains_zero) { |numbers:| numbers.include?(0) }
+  .check { |numbers:| expect(numbers).to be_an(Array) }
+
+report.sample_count
+report.category_counts
+# => { empty: 4, contains_zero: 11 }
+```
+
+`#collect` computes the categories dynamically. Return `nil` to record nothing; return an array to record several categories:
+
+```ruby
+report = PropCheck
+  .forall(x: G.integer)
+  .collect { |x:| [].tap { |labels| labels << :non_negative if x >= 0; labels << :large if x.abs > 100 } }
+  .check {}
+```
+
+`#cover` declares a minimum proportion. Without `applicable:`, the denominator is every successful sample.
+For conditional coverage, pass another category name or a predicate, and that category's applicable samples become its own denominator:
+
+```ruby
+report = PropCheck
+  .forall(string: G.printable_ascii_string)
+  .collect { |string:| string.empty? ? :empty : :non_empty }
+  .cover(:non_empty, 0.90)
+  .cover(:has_a, 0.05, applicable: :non_empty) { |string:| string.include?('a') }
+  .with_config(n_runs: 500)
+  .check { |string:| expect(string).to be_a(String) }
+```
+
+Coverage is decided at the configured successful-sample budget (`n_runs`) with a one-sided exact
+Clopper–Pearson binomial interval at `coverage_confidence` (95% by default). Each rule is one of:
+
+- `satisfied`: with at least the configured confidence, the true proportion is not below the requirement.
+- `violated`: with at least the configured confidence, the true proportion is below the requirement; this raises `PropCheck::Errors::CoverageViolationError`.
+- `inconclusive`: the budget did not provide enough evidence for either conclusion; ordinary assertions still pass and the property is not failed.
+
+This distinction prevents a temporarily unseen category from being reported as a property failure.
+A narrow generator can still make all normal assertions pass while coverage is confidently violated:
+
+```ruby
+expect do
+  PropCheck
+    .forall(x: G.constant(0))
+    .cover(:positive, 0.10) { |x:| x.positive? }
+    .with_config(n_runs: 100)
+    .check { |x:| expect(x).to eq(0) }
+end.to raise_error(PropCheck::Errors::CoverageViolationError) do |error|
+  expect(error.coverage_report.results.first[:status]).to eq(:violated)
+end
+```
 
 
 #### Shrinking

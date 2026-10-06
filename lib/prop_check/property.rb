@@ -1,6 +1,7 @@
 require 'stringio'
 
 require 'prop_check/property/configuration'
+require 'prop_check/property/coverage'
 require 'prop_check/property/output_formatter'
 require 'prop_check/property/shrinker'
 require 'prop_check/hooks'
@@ -65,6 +66,7 @@ module PropCheck
     def initialize(*bindings, **kwbindings)
       @config = self.class.configuration
       @hooks = PropCheck::Hooks.new
+      @classifiers = []
 
       @gen = gen_from_bindings(bindings, kwbindings) unless bindings.empty? && kwbindings.empty?
       freeze
@@ -196,6 +198,47 @@ module PropCheck
     end
 
     ##
+    # Classifies each successful generated value with `label` when the block is truthy.
+    # A single sample can be classified multiple times. Filtered samples and shrink
+    # attempts are not included in the coverage report.
+    def classify(label, &condition)
+      raise ArgumentError, '#classify requires a condition block' unless block_given?
+
+      add_classifier(Coverage::Classifier.new(label: label, block: condition))
+    end
+
+    ##
+    # Collects a category from each successful generated value. Returning nil records
+    # nothing; returning an array records every non-nil value in that array.
+    def collect(&block)
+      raise ArgumentError, '#collect requires a block' unless block_given?
+
+      add_classifier(Coverage::Classifier.new(label: nil, block: block))
+    end
+
+    ##
+    # Declares that at least `minimum` of applicable successful samples should hit
+    # `label`. Use `applicable:` with a category or predicate for conditional coverage.
+    # Coverage is assessed at the run budget with a one-sided exact binomial interval.
+    def cover(label, minimum, applicable: nil, &hit)
+      validate_ratio!(minimum, '#cover minimum')
+
+      duplicate = dup
+      existing_rules = duplicate.instance_variable_get(:@coverage_rules) || []
+      rules = existing_rules + [
+        Coverage::Rule.new(
+          label: label,
+          minimum: minimum.to_f,
+          applicable: applicable,
+          hit: hit
+        )
+      ]
+      duplicate.instance_variable_set(:@coverage_rules, rules)
+      duplicate.freeze
+      duplicate
+    end
+
+    ##
     # Calls `hook` before each time a check is run with new data.
     #
     # This is useful to add setup logic
@@ -246,15 +289,20 @@ module PropCheck
 
       n_runs = 0
       n_successful = 0
+      recorder = Coverage::Recorder.new(@classifiers, coverage_rules)
+      validate_confidence!
 
       # Loop stops at first exception
-      attempts_enum(@gen).each do |generator_result|
+      attempts_enum(@gen, @config.n_runs).each do |generator_result|
         n_runs += 1
-        check_attempt(generator_result, n_successful, &block)
+        check_attempt(generator_result, n_successful, recorder, &block)
         n_successful += 1
       end
 
       ensure_not_exhausted!(n_runs)
+      report = recorder.report(@config.coverage_confidence, @config.n_runs)
+      raise_coverage_violation!(report)
+      report
     end
 
     private def gen_from_bindings(bindings, kwbindings)
@@ -293,8 +341,44 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
         "''
     end
 
-    private def check_attempt(generator_result, n_successful, &block)
-      PropCheck::Helper.call_splatted(generator_result.root, &block)
+    private def add_classifier(classifier)
+      duplicate = dup
+      classifiers = duplicate.instance_variable_get(:@classifiers) + [classifier]
+      duplicate.instance_variable_set(:@classifiers, classifiers)
+      duplicate.freeze
+      duplicate
+    end
+
+    private def coverage_rules
+      @coverage_rules ||
+        []
+    end
+
+    private def validate_ratio!(value, name)
+      return if value.is_a?(Numeric) && value >= 0 && value <= 1
+
+      raise ArgumentError, "#{name} must be between 0 and 1"
+    end
+
+    private def validate_confidence!
+      confidence = @config.coverage_confidence
+      return if confidence.is_a?(Numeric) && confidence > 0 && confidence < 1
+
+      raise ArgumentError, 'coverage_confidence must be between 0 and 1 (exclusive)'
+    end
+
+    private def raise_coverage_violation!(report)
+      return unless report.coverage_violated?
+
+      error = Errors::CoverageViolationError.new(report.to_s)
+      error.define_singleton_method(:coverage_report) { report }
+      raise error
+    end
+
+    private def check_attempt(generator_result, n_successful, recorder, &block)
+      recorder.record(generator_result.root) do |value|
+        PropCheck::Helper.call_splatted(value, &block)
+      end
 
     # immediately stop (without shrinnking) for when the app is asked
     # to close by outside intervention
@@ -323,11 +407,11 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
       raise e, output_string, e.backtrace
     end
 
-    private def attempts_enum(binding_generator)
+    private def attempts_enum(binding_generator, budget)
       @hooks
         .wrap_enum(raw_attempts_enum(binding_generator))
         .lazy
-        .take(@config.n_runs)
+        .take(budget)
     end
 
     private def raw_attempts_enum(binding_generator)

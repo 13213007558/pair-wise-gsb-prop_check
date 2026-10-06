@@ -8,7 +8,8 @@ module PropCheck
     #
     # ## Available options
     # - `verbose:` When true, shows detailed options of the data generation and shrinking process. (Default: false)
-    # - `n_runs:` The amount of iterations each `forall` is being run.
+    # - `n_runs:` The amount of successful (non-filtered) iterations each `forall` is being run.
+    #    This is also the maximum sample budget used for coverage requirements.
     # - `max_generate_attempts:` The amount of times the library tries a generator in total
     #    before raising `Errors::GeneratorExhaustedError`. c.f. `PropCheck::Generator#where`. (Default: 10_000)
     # - `max_shrink_steps:` The amount of times shrinking is attempted. (Default: 10_000)
@@ -20,6 +21,8 @@ module PropCheck
     # - `resize_function:` A proc that can be used to resize _all_ generators.
     #    Takes the current size as integer and should return a new integer.
     #   (Default: `proc { |size| size }`)
+    # - `coverage_confidence:` Confidence used by exact one-sided coverage decisions.
+    #   (Default: 0.95)
     Configuration = Struct.new(
       :verbose,
       :n_runs,
@@ -28,6 +31,7 @@ module PropCheck
       :max_consecutive_attempts,
       :default_epoch,
       :resize_function,
+      :coverage_confidence,
       keyword_init: true
     ) do
       def initialize(
@@ -37,7 +41,8 @@ module PropCheck
         max_shrink_steps: 10_000,
         max_consecutive_attempts: 30,
         default_epoch: DateTime.now,
-        resize_function: proc { |size| size }
+        resize_function: proc { |size| size },
+        coverage_confidence: 0.95
       )
         super
       end
