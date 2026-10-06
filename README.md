@@ -13,6 +13,7 @@ It features:
 - An easy DSL to define your own generators (by combining existing ones, as well as completely custom ones).
 - Shrinking to a minimal counter-example on failure.
 - Hooks to perform extra set-up/cleanup logic before/after every example case.
+- Bounded parallel workers, with deterministic seeded generation and the earliest counter-example selected.
 
 It requires _no_ external dependencies, and integrates well with all common test frameworks (see below).
 
@@ -66,6 +67,7 @@ Before releasing v1.0, we want to finish the following:
 - [x] Builtin generation of `Set`s
 - [x] Builtin generation of `Date`s, `Time`s and `DateTime`s.
 - [x] Configuration option to resize all generators given to a particular Property instance.
+- [x] Optional bounded parallel execution of independent property cases.
 - [x] A simple way to create recursive generators
 - [ ] A usage guide.
 
@@ -100,6 +102,17 @@ It takes any number of generators as arguments (or keyword arguments), as well a
 The value(s) generated from the generator(s) passed to the `forall` will be given to the block as arguments.
 
 Raise an exception from the block if there is a problem. If there is no problem, just return normally.
+
+Independent cases can be checked concurrently by setting `workers:`. Pass an explicit `seed:`
+to make the generated sample sequence independent of worker count; out-of-order failures are
+buffered and the lowest sample index is always the final counter-example. At most `workers`
+cases are generated or in flight at any time.
+
+```ruby
+PropCheck.forall(x: G.integer)
+         .with_config(workers: 4, seed: 12345)
+         .check { |x:| expect(x).to be < 100 }
+```
 
 ```ruby
 G = PropCheck::Generators

@@ -20,6 +20,12 @@ module PropCheck
     # - `resize_function:` A proc that can be used to resize _all_ generators.
     #    Takes the current size as integer and should return a new integer.
     #   (Default: `proc { |size| size }`)
+    # - `workers:` The maximum number of property cases evaluated concurrently.
+    #   Generation and checking are still assigned in deterministic sample order.
+    #   (Default: 1)
+    # - `seed:` The seed for the random number generator. The same seed and
+    #   configuration produces the same sample sequence for any worker count.
+    #   (Default: `nil`, which lets Ruby choose a seed)
     Configuration = Struct.new(
       :verbose,
       :n_runs,
@@ -28,6 +34,8 @@ module PropCheck
       :max_consecutive_attempts,
       :default_epoch,
       :resize_function,
+      :workers,
+      :seed,
       keyword_init: true
     ) do
       def initialize(
@@ -37,7 +45,9 @@ module PropCheck
         max_shrink_steps: 10_000,
         max_consecutive_attempts: 30,
         default_epoch: DateTime.now,
-        resize_function: proc { |size| size }
+        resize_function: proc { |size| size },
+        workers: 1,
+        seed: nil
       )
         super
       end

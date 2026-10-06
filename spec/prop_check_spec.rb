@@ -1,3 +1,5 @@
+require 'thread'
+
 RSpec.describe PropCheck do
   it 'has a version number' do
     expect(PropCheck::VERSION).not_to be nil
@@ -62,6 +64,16 @@ RSpec.describe PropCheck do
           expect(error).to be_a(SignalException)
 
           # Check for no shrinking:
+          expect(defined?(error.prop_check_info)).to be_nil
+        end
+      end
+
+      it 'passes SystemExit through without shrinking when using workers' do
+        expect do
+          PropCheck.forall(x: PropCheck::Generators.integer)
+                   .with_config(workers: 4, seed: 12_345, n_runs: 20)
+                   .check { |x:| raise SystemExit if x > 3 }
+        end.to raise_error(SystemExit) do |error|
           expect(defined?(error.prop_check_info)).to be_nil
         end
       end
@@ -131,14 +143,149 @@ RSpec.describe PropCheck do
         end
 
         it "generates an error with 'shrinking impossible' if the value cannot be shrunk further" do
-          srand(42)
           expect do
-            PropCheck.forall(PropCheck::Generators.array(PropCheck::Generators.integer)) do |array|
-              array.sum / array.length
-            end
+            PropCheck.forall(PropCheck::Generators.array(PropCheck::Generators.integer))
+                     .with_config(seed: 1)
+                     .check { |array| array.sum / array.length }
           end.to raise_error do |error|
             expect(error).to be_a(ZeroDivisionError)
             expect(error.message).to match(/\(shrinking impossible\)/)
+          end
+        end
+      end
+
+      describe 'parallel execution' do
+        def indexed_random_generator
+          PropCheck::Generator.new do |size:, rng:, **|
+            PropCheck::LazyTree.new([size, rng.rand(-size..size)])
+          end
+        end
+
+        it 'generates the same seeded sample sequence with one or four workers' do
+          generator = indexed_random_generator
+
+          collect_samples = lambda do |workers|
+            samples = []
+            mutex = Mutex.new
+
+            PropCheck.forall(generator)
+                     .with_config(n_runs: 20, workers: workers, seed: 12_345)
+                     .check do |sample|
+              mutex.synchronize { samples << sample }
+            end
+
+            samples.sort_by(&:first).map(&:last)
+          end
+
+          expect(collect_samples.call(4)).to eq(collect_samples.call(1))
+        end
+
+        it 'chooses the smallest-index failure when later samples finish first' do
+          generator = PropCheck::Generator.new do |size:, **|
+            PropCheck::LazyTree.wrap(size)
+          end
+
+          gates = Hash.new { |hash, key| hash[key] = Queue.new }
+          started = Queue.new
+          completion_order = []
+          cleanups = []
+          mutex = Mutex.new
+
+          controller = Thread.new do
+            3.times { started.pop }
+            [4, 3, 2, 1].each { |sample| gates[sample] << :continue }
+          end
+
+          property =
+            PropCheck.forall(generator)
+                     .with_config(n_runs: 4, workers: 4, seed: 987)
+                     .around do |&block|
+              block.call
+            ensure
+              sample = Thread.current[:parallel_sample]
+              mutex.synchronize { cleanups << sample } if sample
+            end
+
+          expect do
+            property.check do |sample|
+              Thread.current[:parallel_sample] = sample
+
+              if sample == 1
+                gates[sample].pop
+              else
+                started << sample
+                gates[sample].pop
+              end
+
+              mutex.synchronize { completion_order << sample }
+              raise "failure #{sample}" unless sample == 1
+            end
+          end.to raise_error do |error|
+            expect(error.prop_check_info[:original_input]).to eq(2)
+            expect(error.prop_check_info[:n_successful]).to eq(1)
+          end
+
+          controller.join
+          mutex.synchronize do
+            expect(completion_order).to eq([4, 3, 2, 1])
+            expect(cleanups.sort).to eq([1, 2, 3, 4])
+          end
+        end
+
+        it 'keeps generated and in-flight samples bounded by the worker count' do
+          generator = PropCheck::Generator.new do |size:, **|
+            PropCheck::LazyTree.wrap(size)
+          end
+
+          gates = Hash.new { |hash, key| hash[key] = Queue.new }
+          started = Queue.new
+          mutex = Mutex.new
+          active = 0
+          max_active = 0
+          generated = 0
+          after_calls = 0
+          controller_error = nil
+          first_samples = nil
+
+          controller = Thread.new do
+            begin
+              first_samples = 4.times.map { started.pop }.sort
+              [4, 1, 5, 2, 6, 3, 7, 8].each { |sample| gates[sample] << :continue }
+            rescue => error
+              controller_error = error
+            end
+          end
+
+          property =
+            PropCheck.forall(generator)
+                   .with_config(n_runs: 8, workers: 4, seed: 555)
+                   .after { mutex.synchronize { after_calls += 1 } }
+                   .around do |&block|
+              mutex.synchronize do
+                active += 1
+                max_active = [max_active, active].max
+              end
+              block.call
+            ensure
+              mutex.synchronize { active -= 1 }
+            end
+          property.check do |sample|
+            started << sample
+            gates[sample].pop
+
+            mutex.synchronize do
+              generated += 1
+            end
+          end
+
+          controller.join
+          raise controller_error if controller_error
+
+          mutex.synchronize do
+            expect(first_samples).to eq([1, 2, 3, 4])
+            expect(generated).to eq(8)
+            expect(max_active).to eq(4)
+            expect(after_calls).to eq(8)
           end
         end
       end

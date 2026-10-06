@@ -3,6 +3,7 @@ require 'stringio'
 require 'prop_check/property/configuration'
 require 'prop_check/property/output_formatter'
 require 'prop_check/property/shrinker'
+require 'prop_check/property/runner'
 require 'prop_check/hooks'
 module PropCheck
   ##
@@ -244,17 +245,17 @@ module PropCheck
     def check(&block)
       return self unless block_given?
 
-      n_runs = 0
-      n_successful = 0
+      validate_config!
+      n_successful, result = PropCheck::Property::Runner.new(@gen, @hooks, @config, &block).call
 
-      # Loop stops at first exception
-      attempts_enum(@gen).each do |generator_result|
-        n_runs += 1
-        check_attempt(generator_result, n_successful, &block)
-        n_successful += 1
+      return ensure_not_exhausted!(n_successful) if result.nil?
+
+      case result.status
+      when :failure
+        report_failure(result.tree, result.exception, result.successful_before, &block)
+      else
+        raise result.exception
       end
-
-      ensure_not_exhausted!(n_runs)
     end
 
     private def gen_from_bindings(bindings, kwbindings)
@@ -276,6 +277,16 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
       end
     end
 
+    private def validate_config!
+      unless @config.workers.is_a?(Integer) && @config.workers.positive?
+        raise ArgumentError, '`workers:` must be a positive integer.'
+      end
+
+      unless @config.n_runs.is_a?(Integer) && @config.n_runs >= 0
+        raise ArgumentError, '`n_runs:` must be a nonnegative integer.'
+      end
+    end
+
     private def ensure_not_exhausted!(n_runs)
       return if n_runs >= @config.n_runs
 
@@ -293,18 +304,8 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
         "''
     end
 
-    private def check_attempt(generator_result, n_successful, &block)
-      PropCheck::Helper.call_splatted(generator_result.root, &block)
-
-    # immediately stop (without shrinnking) for when the app is asked
-    # to close by outside intervention
-    rescue SignalException, SystemExit
-      raise
-
-    # We want to capture _all_ exceptions (even low-level ones) here,
-    # so we can shrink to find their cause.
-    # don't worry: they all get reraised
-    rescue Exception => e
+    private def report_failure(generator_result, exception, n_successful, &block)
+      e = exception
       output, shrunken_result, shrunken_exception, n_shrink_steps = show_problem_output(e, generator_result,
                                                                                         n_successful, &block)
       output_string = output.is_a?(StringIO) ? output.string : e.message
@@ -321,34 +322,6 @@ c.f. https://www.ruby-lang.org/en/news/2019/12/12/separation-of-positional-and-k
       end
 
       raise e, output_string, e.backtrace
-    end
-
-    private def attempts_enum(binding_generator)
-      @hooks
-        .wrap_enum(raw_attempts_enum(binding_generator))
-        .lazy
-        .take(@config.n_runs)
-    end
-
-    private def raw_attempts_enum(binding_generator)
-      rng = Random.new
-      size = 1
-      (0...@config.max_generate_attempts)
-        .lazy
-        .map do
-        generator_size = @config.resize_function.call(size).to_i
-        binding_generator.generate(
-          size: generator_size,
-          rng: rng,
-          max_consecutive_attempts: @config.max_consecutive_attempts,
-          config: @config
-        )
-      end
-        .map do |result|
-          size += 1
-
-          result
-        end
     end
 
     private def show_problem_output(problem, generator_results, n_successful, &block)
