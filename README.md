@@ -13,6 +13,7 @@ It features:
 - An easy DSL to define your own generators (by combining existing ones, as well as completely custom ones).
 - Shrinking to a minimal counter-example on failure.
 - Hooks to perform extra set-up/cleanup logic before/after every example case.
+- State-machine properties that generate command sequences, symbolic handles, and reference-aware shrinking.
 
 It requires _no_ external dependencies, and integrates well with all common test frameworks (see below).
 
@@ -67,11 +68,12 @@ Before releasing v1.0, we want to finish the following:
 - [x] Builtin generation of `Date`s, `Time`s and `DateTime`s.
 - [x] Configuration option to resize all generators given to a particular Property instance.
 - [x] A simple way to create recursive generators
+- [x] State-machine properties with symbolic handles
 - [ ] A usage guide.
 
 ## Nice-to-haves
  
-- Stateful property testing. If implemented at some point, will probably happen in a separate add-on library.
+- More built-in generators and helpers for symbolic command arguments.
 
 
 ## Installation
@@ -113,6 +115,76 @@ PropCheck.forall(G.array(G.integer)) do |numbers|
   end
 end
 ```
+
+### State-machine properties
+
+Use `PropCheck.state_machine` when bugs require several operations in sequence. You describe:
+
+- `initial_state`: the model state used to generate valid commands.
+- `setup`/`teardown`: called around every generated and every shrunken sequence.
+- per-command `args`, `available`, `precondition`, `execute`, `next_state`, and `postcondition`.
+
+Commands return symbolic handles (`H0`, `H1`, ...). Later command arguments may refer to earlier handles.
+During shrinking, candidates with dangling references or failed preconditions are filtered out rather
+than executed. Every initial and shrunken candidate is replayed through a fresh `setup` result, and
+`teardown` always runs in an `ensure` block.
+
+```ruby
+G = PropCheck::Generators
+
+machine = PropCheck.state_machine do
+  initial_state { { handles: [], deleted: [] } }
+  setup { BuggyHandleStore.new }
+  teardown(&:close)
+
+  command(
+    :create,
+    next_state: ->(state, _args, handle) do
+      state.merge(handles: state[:handles] + [handle])
+    end,
+    execute: ->(store) { store.create }
+  )
+
+  command(
+    :delete,
+    args: ->(state) do
+      G.one_of(*state[:handles].map { |handle| G.constant(handle) }).map { |h| [h] }
+    end,
+    available: ->(state) { !state[:handles].empty? },
+    precondition: ->(state, args) { state[:handles].include?(args.fetch(0)) },
+    next_state: ->(state, args, _result) do
+      handle = args.fetch(0)
+      state.merge(
+        handles: state[:handles] - [handle],
+        deleted: state[:deleted] + [handle]
+      )
+    end,
+    execute: ->(store, args) { store.delete(args.fetch(0)) }
+  )
+
+  command(
+    :get,
+    args: ->(state) do
+      handles = state[:handles] + state[:deleted]
+      G.one_of(*handles.map { |handle| G.constant(handle) }).map { |handle| [handle] }
+    end,
+    available: ->(state) { !(state[:handles] + state[:deleted]).empty? },
+    precondition: ->(state, args) do
+      (state[:handles] + state[:deleted]).include?(args.fetch(0))
+    end,
+    execute: ->(store, args) { store.get(args.fetch(0)) },
+    postcondition: ->(state, args, result) do
+      raise 'use after delete' if state[:deleted].include?(args.fetch(0)) && result == :found
+    end
+  )
+end
+
+machine.with_config(n_runs: 100).check
+```
+
+For a store that still finds deleted handles, the counterexample shrinks to a sequence such as
+`[create(), delete(H0), get(H0)]`. The values `H0` are framework symbolic handles, and
+`machine.run(sequence)` executes the sequence against a fresh store.
 
 
 Here is another example, using it inside a test case.

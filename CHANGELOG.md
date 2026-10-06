@@ -1,3 +1,7 @@
+- Unreleased
+  - Features:
+    - Model-based state machine properties generate sequences of commands with preconditions, symbolic handles, fresh systems, and cleanup.
+    - State-machine shrinking removes commands and shrinks arguments while filtering dangling references and precondition failures.
 - 1.0.2
   - Fixes:
     - When calling `Generator#sample` or `Generator#call`, the options are now merged with the default options _once_, resulting in a slight speedup. (c.f. [#24](https://github.com/Qqwy/ruby-prop_check/pull/24), thank you, @niku!)
